@@ -4,290 +4,454 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const electron_1 = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
-const fsp = require("node:fs/promises");
-const security_js_1 = require("./security.js");
-const jail_js_1 = require("./jail.js");
-const index_js_1 = require("./providers/index.js");
-const dotenv_1 = require("dotenv");
-// Load in priority order, allowing later files to override earlier ones
-const CWD = process.cwd();
-const envCandidates = [
-    path.join(CWD, ".env"),
-    path.join(CWD, ".env.development"),
-    path.join(CWD, ".env.local"), // your file
-    path.join(CWD, ".env.development.local"), // if you use this
-];
-for (const p of envCandidates) {
-    if (fs.existsSync(p)) {
-        (0, dotenv_1.config)({ path: p, override: true }); // let .env.local win
+const node_fs_1 = require("node:fs");
+const os = require("node:os");
+const node_child_process_1 = require("node:child_process");
+const node_child_process_2 = require("node:child_process");
+const node_util_1 = require("node:util");
+const dotenv = require("dotenv");
+const jail_1 = require("./jail");
+const exec = (0, node_util_1.promisify)(node_child_process_2.exec);
+// ─────────────────────────────────────────────────────────────
+// Load env for MAIN (so OPENAI_API_KEY is available here)
+// ─────────────────────────────────────────────────────────────
+try {
+    const CWD = process.cwd();
+    const candidates = [
+        path.join(CWD, ".env"),
+        path.join(CWD, ".env.development"),
+        path.join(CWD, ".env.local"),
+        path.join(CWD, ".env.development.local"),
+    ];
+    for (const p of candidates) {
+        if (fs.existsSync(p))
+            dotenv.config({ path: p, override: true });
     }
 }
-// Optional: quick sanity log (won't print the key)
-console.log("[ai] OPENAI_API_KEY present in main:", Boolean(process.env.OPENAI_API_KEY));
-(0, security_js_1.commonAppSecurity)();
-let mainWindow = null;
-const CONFIG_PATH = path.join(process.cwd(), "config.json");
-function loadConfig() {
+catch { /* optional */ }
+const DEFAULT_CONFIG = {
+    ROOT_DIR: path.join(os.homedir(), "ai-shell-jail"),
+    AUTO_EXEC: true,
+    PROVIDER: "openai",
+    MODEL: "gpt-4o-mini",
+};
+function configPath() {
+    return path.join(electron_1.app.getPath("userData"), "config.json");
+}
+function readConfig() {
     try {
-        const raw = fs.readFileSync(CONFIG_PATH, "utf8");
-        const j = JSON.parse(raw);
-        return {
-            ROOT_DIR: j.ROOT_DIR || (0, jail_js_1.getRootDir)(),
-            AUTO_EXEC: j.AUTO_EXEC ?? true,
-            PROVIDER: j.PROVIDER || (process.env.AI_PROVIDER || "openai"),
-            MODEL: j.MODEL || (process.env.AI_MODEL || "gpt-4.1-mini"),
-        };
+        const p = configPath();
+        if (fs.existsSync(p)) {
+            const raw = fs.readFileSync(p, "utf8");
+            const parsed = JSON.parse(raw);
+            return { ...DEFAULT_CONFIG, ...parsed };
+        }
     }
-    catch {
-        return {
-            ROOT_DIR: (0, jail_js_1.getRootDir)(),
-            AUTO_EXEC: true,
-            PROVIDER: (process.env.AI_PROVIDER || "openai"),
-            MODEL: (process.env.AI_MODEL || "gpt-4.1-mini"),
-        };
-    }
+    catch { }
+    return { ...DEFAULT_CONFIG };
 }
-function saveConfig(cfg) {
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), "utf8");
+async function writeConfig(patch) {
+    const next = { ...readConfig(), ...patch };
+    await node_fs_1.promises.mkdir(path.dirname(configPath()), { recursive: true });
+    await node_fs_1.promises.writeFile(configPath(), JSON.stringify(next, null, 2), "utf8");
+    return next;
 }
-let appCfg = loadConfig();
-// ----------------------- Window / Boot ------------------------
+// ─────────────────────────────────────────────────────────────
+// Ensure jail exists on startup
+// ─────────────────────────────────────────────────────────────
+async function ensureJail() {
+    const root = readConfig().ROOT_DIR;
+    await node_fs_1.promises.mkdir(root, { recursive: true });
+    (0, jail_1.setRootDir)(root); // make sure jail.ts knows the current root
+}
+// ─────────────────────────────────────────────────────────────
+// BrowserWindow
+// ─────────────────────────────────────────────────────────────
+let mainWindow = null;
 async function createWindow() {
+    await ensureJail();
     mainWindow = new electron_1.BrowserWindow({
         width: 1120,
-        height: 760,
-        minWidth: 900,
-        minHeight: 600,
-        autoHideMenuBar: true,
+        height: 780,
+        title: "Kage 2.0",
         webPreferences: {
             preload: path.join(__dirname, "preload.js"),
-            nodeIntegration: false,
             contextIsolation: true,
+            nodeIntegration: false,
             sandbox: true,
         },
     });
-    // Hide menu everywhere
-    mainWindow.setMenuBarVisibility(false);
-    mainWindow.removeMenu?.();
-    electron_1.Menu.setApplicationMenu(null);
+    const DEV_URL = process.env.VITE_DEV_SERVER_URL || process.env.DEV_SERVER_URL || "";
+    if (DEV_URL) {
+        await mainWindow.loadURL(DEV_URL);
+    }
+    else {
+        await mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
+    }
+    // Keep our title regardless of <title> in the page
     mainWindow.on("page-title-updated", (e) => {
         e.preventDefault();
-        mainWindow.setTitle("Kage 2.0");
+        mainWindow?.setTitle("Kage 2.0");
     });
-    (0, security_js_1.applySecurity)(mainWindow);
-    // Vite dev vs. file URL
-    const devURL = "http://localhost:5173";
-    try {
-        await mainWindow.loadURL(devURL);
-    }
-    catch {
-        await mainWindow.loadFile(path.join(process.cwd(), "dist", "index.html"));
-    }
-    mainWindow.on("closed", () => { mainWindow = null; });
+    mainWindow.on("closed", () => {
+        mainWindow = null;
+    });
 }
-// Initialize jail root (env > config > sandbox)
-function initRoot() {
-    const envRoot = process.env.APP_ROOT || process.env.ROOT_DIR;
-    const cfgRoot = appCfg.ROOT_DIR;
-    const root = envRoot || cfgRoot || path.join(process.cwd(), "sandbox");
-    (0, jail_js_1.setRootDir)(root);
-    appCfg.ROOT_DIR = root;
+function createAppMenu() {
+    const isMac = process.platform === "darwin";
+    const macAppSubmenu = [
+        { role: "about" },
+        { type: "separator" },
+        { role: "services" },
+        { type: "separator" },
+        { role: "hide" },
+        { role: "hideOthers" },
+        { role: "unhide" },
+        { type: "separator" },
+        { role: "quit" },
+    ];
+    const fileSubmenu = [
+        {
+            label: "Settings",
+            accelerator: "CmdOrCtrl+,",
+            click: () => mainWindow?.webContents.send("menu:cmd", "openSettings"),
+        },
+        {
+            label: "Select Working Directory…",
+            click: async () => {
+                const res = await electron_1.dialog.showOpenDialog({
+                    title: "Select working directory (jail root)",
+                    properties: ["openDirectory", "createDirectory"],
+                });
+                if (!res.canceled && res.filePaths[0]) {
+                    // Let renderer refresh its view of config/root
+                    mainWindow?.webContents.send("menu:cmd", "reloadConfigAfterRootPick", res.filePaths[0]);
+                }
+            },
+        },
+        { type: "separator" },
+        isMac ? { role: "close" }
+            : { role: "quit" },
+    ];
+    const aiSubmenu = [
+        {
+            label: "Summarize & Save",
+            accelerator: "CmdOrCtrl+S",
+            click: () => mainWindow?.webContents.send("menu:cmd", "summarize"),
+        },
+        {
+            label: "Stop",
+            accelerator: "Esc",
+            click: () => mainWindow?.webContents.send("menu:cmd", "stop"),
+        },
+    ];
+    const viewSubmenu = [
+        { role: "reload" },
+        { role: "toggleDevTools" },
+        { type: "separator" },
+        { role: "togglefullscreen" },
+    ];
+    const helpSubmenu = [
+        {
+            label: "Open Jail Folder",
+            click: () => electron_1.shell.openPath((0, jail_1.getRootDir)()),
+        },
+        {
+            label: "Open Config Folder",
+            click: () => electron_1.shell.openPath(electron_1.app.getPath("userData")),
+        },
+    ];
+    const template = [
+        ...(isMac
+            ? [{ label: electron_1.app.name, submenu: macAppSubmenu }]
+            : []),
+        { label: "File", submenu: fileSubmenu },
+        { label: "AI", submenu: aiSubmenu },
+        { label: "View", submenu: viewSubmenu },
+        { label: "Help", submenu: helpSubmenu },
+    ];
+    const menu = electron_1.Menu.buildFromTemplate(template);
+    electron_1.Menu.setApplicationMenu(menu);
 }
+// ─────────────────────────────────────────────────────────────
+// OpenAI (Responses API) minimal wrapper
+// ─────────────────────────────────────────────────────────────
+async function complete(prompt) {
+    const { MODEL, PROVIDER } = readConfig();
+    if ((PROVIDER || "openai").toLowerCase() !== "openai") {
+        throw new Error(`Provider '${PROVIDER}' not implemented in main`);
+    }
+    const key = process.env.OPENAI_API_KEY || process.env.OPENAI_APIKEY;
+    if (!key)
+        throw new Error("OpenAI not configured");
+    const res = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+        body: JSON.stringify({ model: MODEL || "gpt-4o-mini", input: prompt }),
+    });
+    if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        throw new Error(`OpenAI error: ${res.status} ${txt}`);
+    }
+    const data = await res.json();
+    const text = data?.output?.[0]?.content?.[0]?.text ??
+        data?.output_text ??
+        data?.choices?.[0]?.message?.content ??
+        data?.choices?.[0]?.text ??
+        JSON.stringify(data);
+    return String(text);
+}
+const pendingById = new Map();
+function pushExecToRenderer(req) {
+    if (!mainWindow)
+        return;
+    mainWindow.webContents.send("exec:pending", req);
+}
+// ─────────────────────────────────────────────────────────────
+// AI cancel tokens (Stop button support)
+// ─────────────────────────────────────────────────────────────
+/** We don't abort HTTP here; we ignore stale responses via tokens. */
+const aiTokens = new Map();
+function listAISources() {
+    // Read env once (dotenv already loaded at startup)
+    const env = process.env;
+    // Known sources (You can expand this later)
+    const openaiHas = !!(env.OPENAI_API_KEY || env.OPENAI_APIKEY);
+    const chatlyHas = !!env.CHATLY_API_KEY;
+    const v0Has = !!(env.V0_API_KEY || env.VERCEL_V0_API_KEY);
+    // NOTE: Only OpenAI is actually implemented in ai:complete today.
+    // chatly and v0 are shown but marked supported:false (UI will disable them).
+    return [
+        {
+            id: "openai",
+            label: "ChatGPT",
+            envVar: openaiHas ? (env.OPENAI_API_KEY ? "OPENAI_API_KEY" : "OPENAI_APIKEY") : "OPENAI_API_KEY",
+            hasKey: openaiHas,
+            supported: true,
+            // Static list for now; TODO: fetch dynamically from provider
+            models: ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1"],
+        },
+        {
+            id: "chatly",
+            label: "Chatly",
+            envVar: "CHATLY_API_KEY",
+            hasKey: chatlyHas,
+            supported: false, // TODO: implement provider call
+            models: [], // TODO: populate from Chatly once supported
+        },
+        {
+            id: "v0",
+            label: "v0.dev",
+            envVar: v0Has ? (env.V0_API_KEY ? "V0_API_KEY" : "VERCEL_V0_API_KEY") : "V0_API_KEY",
+            hasKey: v0Has,
+            supported: false, // TODO: implement provider call
+            models: [], // TODO: populate dynamically
+        },
+    ];
+}
+// ─────────────────────────────────────────────────────────────
+// IPC handlers
+// ─────────────────────────────────────────────────────────────
+function registerIpc() {
+    // Root helpers
+    electron_1.ipcMain.handle("getRoot", async () => ({ ok: true, root: (0, jail_1.getRootDir)() }));
+    electron_1.ipcMain.handle("cfg:getRoot", async () => ({ ok: true, root: (0, jail_1.getRootDir)() }));
+    // Config
+    electron_1.ipcMain.handle("cfg:get", async () => ({ ok: true, config: readConfig(), bridge: true, root: (0, jail_1.getRootDir)() }));
+    electron_1.ipcMain.handle("cfg:update", async (_e, patch) => {
+        const next = await writeConfig(patch || {});
+        // keep jail.ts in sync if root changed
+        if (patch.ROOT_DIR)
+            (0, jail_1.setRootDir)(next.ROOT_DIR);
+        return { ok: true, config: next };
+    });
+    electron_1.ipcMain.handle("ai:sources", async () => {
+        return { ok: true, sources: listAISources() };
+    });
+    electron_1.ipcMain.handle("cfg:selectRoot", async () => {
+        const res = await electron_1.dialog.showOpenDialog({
+            title: "Select working directory (jail root)",
+            properties: ["openDirectory", "createDirectory"],
+        });
+        if (res.canceled || !res.filePaths?.[0])
+            return { canceled: true };
+        const next = await writeConfig({ ROOT_DIR: res.filePaths[0] });
+        (0, jail_1.setRootDir)(next.ROOT_DIR);
+        return { ok: true, root: next.ROOT_DIR };
+    });
+    // File ops (jailed)
+    electron_1.ipcMain.handle("fs:write", async (_e, arg1, arg2) => {
+        try {
+            const rel = typeof arg1 === "string" ? arg1 : arg1?.rel;
+            const content = typeof arg1 === "string" ? arg2 : arg1?.content;
+            if (!rel)
+                throw new Error("Missing rel");
+            const dst = (0, jail_1.jailedPath)(rel); // ✅ single-arg form uses current jail root
+            await node_fs_1.promises.mkdir(path.dirname(dst), { recursive: true });
+            await node_fs_1.promises.writeFile(dst, String(content ?? ""), "utf8");
+            return { ok: true, rel };
+        }
+        catch (err) {
+            return { ok: false, error: err?.message || String(err) };
+        }
+    });
+    electron_1.ipcMain.handle("fs:saveAs", async (_e, suggested, content) => {
+        const res = await electron_1.dialog.showSaveDialog({
+            title: "Save As",
+            defaultPath: suggested || "snippet.txt",
+            showsTagField: false,
+        });
+        if (res.canceled || !res.filePath)
+            return { canceled: true };
+        await node_fs_1.promises.mkdir(path.dirname(res.filePath), { recursive: true });
+        await node_fs_1.promises.writeFile(res.filePath, content ?? "", "utf8");
+        // If saved into jail, return a rel path too
+        let rel;
+        try {
+            const base = path.resolve((0, jail_1.getRootDir)());
+            const abs = path.resolve(res.filePath);
+            if (abs === base || abs.startsWith(base + path.sep))
+                rel = path.relative(base, abs) || ".";
+        }
+        catch { }
+        return { ok: true, path: res.filePath, rel };
+    });
+    electron_1.ipcMain.handle("fs:pickFile", async () => {
+        const res = await electron_1.dialog.showOpenDialog({ title: "Pick a file to attach", properties: ["openFile"] });
+        if (res.canceled || !res.filePaths?.[0])
+            return { canceled: true };
+        const p = res.filePaths[0];
+        const stat = await node_fs_1.promises.stat(p);
+        const MAX = 2 * 1024 * 1024;
+        let content = "";
+        let truncated = false;
+        try {
+            const buf = await node_fs_1.promises.readFile(p);
+            if (buf.length > MAX) {
+                content = buf.subarray(0, MAX).toString("utf8");
+                truncated = true;
+            }
+            else {
+                content = buf.toString("utf8");
+            }
+        }
+        catch (e) {
+            return { ok: false, error: e?.message || String(e) };
+        }
+        return { ok: true, path: p, name: path.basename(p), size: stat.size, truncated, content };
+    });
+    // AI
+    electron_1.ipcMain.handle("ai:complete", async (e, prompt) => {
+        const wcid = e.sender.id;
+        const my = (aiTokens.get(wcid) ?? 0) + 1;
+        aiTokens.set(wcid, my);
+        try {
+            const text = await complete(prompt);
+            if ((aiTokens.get(wcid) ?? 0) !== my)
+                return { ok: false, canceled: true }; // user pressed Stop
+            return { ok: true, text };
+        }
+        catch (err) {
+            if ((aiTokens.get(wcid) ?? 0) !== my)
+                return { ok: false, canceled: true };
+            return { ok: false, error: err?.message ?? String(err) };
+        }
+    });
+    electron_1.ipcMain.handle("ai:cancel", async (e) => {
+        const wcid = e.sender.id;
+        aiTokens.set(wcid, (aiTokens.get(wcid) ?? 0) + 1);
+        return { ok: true, canceled: true };
+    });
+    // Exec approval flow
+    electron_1.ipcMain.handle("exec:request", async (_e, payload) => {
+        const id = payload?.id || String(Date.now());
+        // Always lock CWD to the jail root; ignore renderer-provided cwd
+        const req = {
+            id,
+            command: String(payload?.command || ""),
+            cwd: (0, jail_1.getRootDir)(),
+        };
+        pendingById.set(id, req);
+        pushExecToRenderer(req);
+        return { queued: true };
+    });
+    electron_1.ipcMain.handle("exec:approve", async (_e, id, approved) => {
+        const req = pendingById.get(id);
+        if (!req)
+            return { status: "error", error: "Unknown request id" };
+        pendingById.delete(id);
+        if (!approved)
+            return { status: "rejected" };
+        try {
+            const jail = (0, jail_1.getRootDir)();
+            async function runPowerShell(command) {
+                return new Promise((resolve) => {
+                    const child = (0, node_child_process_1.spawn)("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command], { cwd: jail, windowsHide: true });
+                    let stdout = "";
+                    let stderr = "";
+                    child.stdout.on("data", (d) => (stdout += d.toString()));
+                    child.stderr.on("data", (d) => (stderr += d.toString()));
+                    child.on("close", (code) => resolve({ code, stdout, stderr }));
+                    // 10 min hard timeout
+                    setTimeout(() => child.kill("SIGKILL"), 10 * 60 * 1000);
+                });
+            }
+            async function runSh(command) {
+                return new Promise((resolve) => {
+                    const child = (0, node_child_process_1.spawn)("/bin/sh", ["-lc", command], { cwd: jail });
+                    let stdout = "";
+                    let stderr = "";
+                    child.stdout.on("data", (d) => (stdout += d.toString()));
+                    child.stderr.on("data", (d) => (stderr += d.toString()));
+                    child.on("close", (code) => resolve({ code, stdout, stderr }));
+                    setTimeout(() => child.kill("SIGKILL"), 10 * 60 * 1000);
+                });
+            }
+            const result = process.platform === "win32"
+                ? await runPowerShell(req.command)
+                : await runSh(req.command);
+            if (result.code && result.code !== 0) {
+                // Non-zero exit → surface as error to renderer
+                return {
+                    status: "error",
+                    error: `Exit ${result.code}`,
+                    stdout: result.stdout,
+                    stderr: result.stderr,
+                    code: result.code,
+                };
+            }
+            return { status: "done", code: result.code ?? 0, stdout: result.stdout, stderr: result.stderr };
+        }
+        catch (e) {
+            return {
+                status: "error",
+                error: e?.message || "exec error",
+                stdout: e?.stdout ?? "",
+                stderr: e?.stderr ?? "",
+            };
+        }
+    });
+}
+// ─────────────────────────────────────────────────────────────
+// App lifecycle
+// ─────────────────────────────────────────────────────────────
+electron_1.app.on("window-all-closed", () => {
+    if (process.platform !== "darwin")
+        electron_1.app.quit();
+});
 electron_1.app.whenReady().then(async () => {
-    initRoot();
-    // NOTE: your initProvider type only accepts { provider?, openaiKey? }
-    (0, index_js_1.initProvider)({
-        provider: appCfg.PROVIDER,
-        openaiKey: process.env.OPENAI_API_KEY,
-        // model: appCfg.MODEL,  // ❌ removed: your type doesn’t accept 'model'
-    });
-    registerIpc(); // <-- all handlers in one place
+    registerIpc();
     await createWindow();
+    createAppMenu();
     electron_1.app.on("activate", () => {
         if (electron_1.BrowserWindow.getAllWindows().length === 0)
             createWindow();
     });
 });
-electron_1.app.on("window-all-closed", () => {
-    if (process.platform !== "darwin")
-        electron_1.app.quit();
+// Open external links in the default browser
+electron_1.app.on("web-contents-created", (_e, contents) => {
+    contents.setWindowOpenHandler(({ url }) => {
+        electron_1.shell.openExternal(url);
+        return { action: "deny" };
+    });
 });
-// --------------------------- Helpers --------------------------
-function validateCwdInsideJail(cwd) {
-    const root = path.resolve((0, jail_js_1.getRootDir)());
-    const resolved = path.resolve(cwd || root);
-    if (resolved !== root && !resolved.startsWith(root + path.sep)) {
-        throw new Error("Path escapes jail");
-    }
-    return resolved;
-}
-// ----------------------------- IPC ----------------------------
-function registerIpc() {
-    // dev-friendly: ensure single registration
-    const chans = [
-        "getRoot",
-        "cfg:getRoot", // alias for older renderer calls
-        "fs:write",
-        "fs:saveAs",
-        "fs:pickFile",
-        "cfg:get",
-        "cfg:update",
-        "cfg:selectRoot",
-        "ai:complete",
-        "exec:request",
-        "exec:approve",
-        "sys:mem",
-    ];
-    chans.forEach((c) => electron_1.ipcMain.removeHandler(c));
-    // --- Root (new + legacy alias) ---
-    electron_1.ipcMain.handle("getRoot", async () => ({ ok: true, root: (0, jail_js_1.getRootDir)() }));
-    electron_1.ipcMain.handle("cfg:getRoot", async () => ({ ok: true, root: (0, jail_js_1.getRootDir)() })); // 🔁 alias
-    // --- File ops (write is jailed; saveAs can save outside) ---
-    electron_1.ipcMain.handle("fs:write", async (_e, arg1, arg2) => {
-        try {
-            const rel = typeof arg1 === "string" ? arg1 : arg1.rel;
-            const content = typeof arg1 === "string" ? arg2 : arg1.content;
-            if (!rel)
-                throw new Error("Missing rel path");
-            const abs = (0, jail_js_1.jailedPath)(rel); // ✅ ensures inside jail
-            await fsp.mkdir(path.dirname(abs), { recursive: true });
-            await fsp.writeFile(abs, content);
-            return { ok: true, rel };
-        }
-        catch (err) {
-            return { ok: false, error: err.message };
-        }
-    });
-    electron_1.ipcMain.handle("sys:mem", async () => {
-        try {
-            const sys = process.getSystemMemoryInfo(); // { total, free, ... } in KB
-            const proc = await process.getProcessMemoryInfo(); // { workingSetSize, private, ... } in KB
-            return { ok: true, sys, proc };
-        }
-        catch (e) {
-            return { ok: false, error: e?.message || String(e) };
-        }
-    });
-    electron_1.ipcMain.handle("fs:saveAs", async (_e, suggested, content) => {
-        const { canceled, filePath } = await electron_1.dialog.showSaveDialog(electron_1.BrowserWindow.getFocusedWindow(), {
-            title: "Save file",
-            defaultPath: path.join((0, jail_js_1.getRootDir)(), suggested || "snippet.txt"),
-        });
-        if (canceled || !filePath)
-            return { canceled: true };
-        await fsp.mkdir(path.dirname(filePath), { recursive: true });
-        await fsp.writeFile(filePath, content, "utf8");
-        const root = path.resolve((0, jail_js_1.getRootDir)());
-        const rel = filePath.startsWith(root + path.sep) ? path.relative(root, filePath) : undefined;
-        return { ok: true, path: filePath, rel };
-    });
-    // --- Import from anywhere (no jail) ---
-    let lastPickDir = null;
-    electron_1.ipcMain.handle("fs:pickFile", async () => {
-        const start = lastPickDir || (0, jail_js_1.getRootDir)();
-        const { canceled, filePaths } = await electron_1.dialog.showOpenDialog(electron_1.BrowserWindow.getFocusedWindow(), {
-            title: "Select a file",
-            defaultPath: start,
-            properties: ["openFile"],
-        });
-        if (canceled || !filePaths?.length)
-            return { canceled: true };
-        const chosen = path.resolve(filePaths[0]);
-        lastPickDir = path.dirname(chosen);
-        const MAX = 200 * 1024;
-        let contentUtf8 = await fsp.readFile(chosen, "utf8");
-        let truncated = false;
-        if (Buffer.byteLength(contentUtf8, "utf8") > MAX) {
-            contentUtf8 = contentUtf8.slice(0, MAX);
-            truncated = true;
-        }
-        const root = path.resolve((0, jail_js_1.getRootDir)());
-        const rel = chosen.startsWith(root + path.sep) ? path.relative(root, chosen) : undefined;
-        const stat = await fsp.stat(chosen);
-        return {
-            ok: true,
-            path: chosen,
-            rel,
-            name: path.basename(chosen),
-            size: stat.size,
-            truncated,
-            content: contentUtf8,
-        };
-    });
-    // --- Config (get/update/selectRoot) ---
-    electron_1.ipcMain.handle("cfg:get", async () => ({
-        ok: true,
-        config: appCfg,
-        bridge: true,
-        root: (0, jail_js_1.getRootDir)(),
-    }));
-    electron_1.ipcMain.handle("cfg:update", async (_e, patch) => {
-        appCfg = { ...appCfg, ...patch };
-        if (patch.ROOT_DIR)
-            (0, jail_js_1.setRootDir)(patch.ROOT_DIR);
-        saveConfig(appCfg);
-        // Re-init provider (still no 'model' arg here due to type constraints)
-        (0, index_js_1.initProvider)({
-            provider: appCfg.PROVIDER,
-            openaiKey: process.env.OPENAI_API_KEY,
-            // model: appCfg.MODEL, // ❌ not supported by your initProvider type
-        });
-        return { ok: true, config: appCfg };
-    });
-    electron_1.ipcMain.handle("cfg:selectRoot", async () => {
-        const { canceled, filePaths } = await electron_1.dialog.showOpenDialog(electron_1.BrowserWindow.getFocusedWindow(), {
-            title: "Select working directory",
-            defaultPath: (0, jail_js_1.getRootDir)(),
-            properties: ["openDirectory", "createDirectory"],
-        });
-        if (canceled || !filePaths?.length)
-            return { canceled: true };
-        const chosen = path.resolve(filePaths[0]);
-        (0, jail_js_1.setRootDir)(chosen);
-        appCfg.ROOT_DIR = chosen;
-        saveConfig(appCfg);
-        return { ok: true, root: chosen };
-    });
-    // --- AI ---
-    electron_1.ipcMain.handle("ai:complete", async (_e, prompt) => {
-        const text = await (0, index_js_1.complete)(prompt);
-        return { ok: true, text };
-    });
-    const pendingApprovals = new Map();
-    electron_1.ipcMain.handle("exec:request", async (_e, req) => {
-        const safe = { ...req, cwd: (0, jail_js_1.getRootDir)() }; // always run in jail root
-        pendingApprovals.set(req.id, safe);
-        mainWindow?.webContents.send("exec:pending", safe);
-        return { queued: true };
-    });
-    electron_1.ipcMain.handle("exec:approve", async (_e, { id, approved }) => {
-        const req = pendingApprovals.get(id);
-        if (!req)
-            return { status: "error", error: "request not found" };
-        pendingApprovals.delete(id);
-        if (!approved)
-            return { status: "rejected" };
-        try {
-            const cwd = validateCwdInsideJail(req.cwd);
-            const { exec } = await Promise.resolve().then(() => require("node:child_process"));
-            return await new Promise((resolve) => {
-                exec(req.command, { cwd, windowsHide: true }, (err, stdout, stderr) => {
-                    if (err) {
-                        resolve({
-                            status: "done",
-                            code: err.code ?? 1,
-                            stdout: String(stdout ?? ""),
-                            stderr: String(stderr ?? "") || String(err),
-                        });
-                    }
-                    else {
-                        resolve({ status: "done", code: 0, stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
-                    }
-                });
-            });
-        }
-        catch (e) {
-            return { status: "error", error: e?.message || String(e) };
-        }
-    });
-}

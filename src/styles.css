@@ -324,3 +324,95 @@ body {
 
 /* Selection */
 ::selection { background: rgba(96,165,250,0.35); color: #fff; }
+
+/* =========================================================
+   PATCH: Background should be static (non-repeating)
+   ========================================================= */
+/* Your body already defines a layered gradient. These additions
+   keep it fixed to the viewport and avoid any tiling/repeat effect. */
+body {
+  background-attachment: fixed;  /* ADDED: keep gradient stationary */
+  background-repeat: no-repeat;  /* ADDED */
+  background-size: cover;        /* ADDED */
+}
+
+/* Ensure the main column can anchor a sticky footer row */
+.container {
+  /* Your CSS already has min-height: 100%; we add 100vh so the
+     sticky input row has a viewport-sized scrolling context. */
+  min-height: 100vh; /* ADDED */
+}
+
+/* =========================================================
+   PATCH: Chat pane scrolling behavior & themed scrollbars
+   ========================================================= */
+/* Chat was already themed; these enhance interaction and layout stability */
+.chat {
+  overscroll-behavior: contain;     /* ADDED: prevent overscroll bounce from reaching body */
+  scrollbar-gutter: stable both-edges; /* ADDED: reserves space so layout doesn't shift */
+}
+
+/* (Your themed scrollbar rules are already present and kept as-is.) */
+
+/* =========================================================
+   PATCH: Sticky input row & single-line layout
+   ========================================================= */
+/* Make the input row stick to the bottom, on one line, above the content */
+.row {
+  position: sticky;   /* ADDED: stick to bottom */
+  bottom: 0;          /* ADDED */
+  z-index: 5;         /* ADDED: stay above chat content */
+  flex-wrap: nowrap;  /* ADDED: prevent wrapping when Send ↔ Stop toggles */
+  /* We keep your existing background, border, padding, shadow, etc. */
+}
+
+/* =========================================================
+   PATCH: Input wrap → grid (button stays put, no reflow)
+   ========================================================= */
+/* Your App.tsx now renders the input region as a 2-column grid.
+   These rules align with that and *override* the old absolute button rule. */
+.input-wrap {
+  display: grid;                       /* ADDED */
+  grid-template-columns: 1fr 36px;     /* ADDED: input | fixed button slot */
+  align-items: center;                 /* ADDED */
+  gap: 8px;                            /* ADDED */
+}
+
+/* The earlier input had extra right padding to make room for the
+   absolutely-positioned send button. With the grid layout, we let
+   the input use normal padding so text doesn't collide with the button. */
+.input-wrap input {
+  padding: 10px;       /* ADDED: overrides earlier 10px 40px 10px 10px */
+  min-width: 0;        /* ADDED: allow input to shrink instead of pushing button down */
+}
+
+/* IMPORTANT: Override the earlier absolute positioning for .send-btn.
+   We DO NOT remove the old rule; this override (defined later in the file)
+   takes precedence and keeps the button in the grid’s second column. */
+.input-wrap .send-btn {
+  position: static;    /* ADDED: override earlier absolute positioning */
+  right: auto;         /* ADDED */
+  top: auto;           /* ADDED */
+  transform: none;     /* ADDED: no vertical nudge in grid */
+  width: 32px;         /* ADDED: match your .icon-btn size */
+  height: 32px;        /* ADDED */
+}
+
+/* If you’re also showing a red Stop button during a request, it
+   inherits .icon-btn styles; keep the same footprint to avoid reflow. */
+.icon-btn.danger {
+  width: 32px;   /* ADDED: ensure same width as Send */
+  height: 32px;  /* ADDED */
+}
+
+/* Optional: slight polish so the sticky row blends with the panel background
+   when it overlays content during scroll (keeps your existing colors). */
+/*
+.row {
+  background: color-mix(in oklab, var(--panel) 92%, transparent);
+  backdrop-filter: blur(3px);
+  border-top: 1px solid var(--border);
+}
+*/
+
+

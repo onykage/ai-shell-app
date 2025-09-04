@@ -11,7 +11,8 @@ declare global {
       // simple
       getRoot(): Promise<{ ok: boolean; root: string } | string>;
       askAI(prompt: string): Promise<any>; // may return string OR {ok,text}
-      getMem?: () => Promise<{ ok: boolean; sys?: any; proc?: any; error?: string }>;
+      // cancel (optional; safe if preload/main haven't added yet)
+      cancelAI?: () => Promise<{ ok?: boolean; canceled?: boolean }>;
 
       // exec approval
       requestExec(payload: { id: string; command: string; cwd: string }): Promise<{ queued: boolean }>;
@@ -45,11 +46,18 @@ declare global {
 }
 
 /* ---------------------- Types ---------------------- */
-type Msg = { from: "user" | "ai"; text: string; ts?: number; durMs?: number; anim?: "appear" };
+type Msg = { from: "user" | "ai" | "system"; text: string; ts?: number; durMs?: number; anim?: "appear" };
 type CodeBlock = { lang: string; code: string };
 type PendingExec = { id: string; command: string; cwd: string };
 type Attachment = { name: string; displayPath: string; size: number; truncated: boolean; content: string; lang: string };
-type AppConfig = { ROOT_DIR: string; AUTO_EXEC: boolean; PROVIDER: string; MODEL: string };
+type AppConfig = {
+  ROOT_DIR: string;
+  AUTO_EXEC: boolean;
+  PROVIDER: string;
+  MODEL: string;
+  // TODO(settings): when false, Enter won't send; only the button will.
+  SEND_ON_ENTER?: boolean;
+};
 
 /* ---------------------- Markdown / Highlight ---------------------- */
 marked.setOptions({
@@ -231,6 +239,19 @@ function IconImport() {
     </svg>
   );
 }
+function IconPaperclip() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M21 8.5l-9.19 9.19a5 5 0 01-7.07-7.07L12.1 3.16a3.5 3.5 0 014.95 4.95L9.4 15.76a2 2 0 01-2.83-2.83L15 4.5"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
 function IconX() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
@@ -270,53 +291,108 @@ function IconSparkle() {
 }
 /* -------------------- end Icons -------------------- */
 
-function MemoryBadge({ bridge }: { bridge: typeof window.api | undefined }) {
-  const [text, setText] = React.useState<string>("—");
-
-  React.useEffect(() => {
-    let alive = true;
-    async function tick() {
-      try {
-        const res = await bridge?.getMem?.();
-        if (!alive || !res?.ok) return;
-        const kb = Number(res.proc?.workingSetSize ?? 0);        // process working set (KB)
-        const mb = kb / 1024;
-        const totalKb = Number(res.sys?.total ?? 0);             // system total (KB)
-        const pct = totalKb ? (mb / (totalKb / 1024)) * 100 : 0; // process vs system (%)
-        setText(`${mb.toFixed(0)} MB${pct ? ` • ${pct.toFixed(1)}%` : ""}`);
-      } catch {
-        if (alive) setText("—");
-      }
-    }
-    tick();
-    const id = window.setInterval(tick, 2000);
-    return () => {
-      alive = false;
-      window.clearInterval(id);
-    };
-  }, [bridge]);
-
+/* --------- New: Stop Icon + Model/Platform Badge --------- */
+function IconStop() {
   return (
-    <span
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+      <rect x="6" y="6" width="12" height="12" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+function textColorOn(bg: string) {
+  // simple luminance check for black/white text
+  const hex = bg.replace("#", "");
+  const r = parseInt(hex.slice(0, 2), 16) / 255;
+  const g = parseInt(hex.slice(2, 4), 16) / 255;
+  const b = parseInt(hex.slice(4, 6), 16) / 255;
+  const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return lum > 0.54 ? "#111827" : "#ffffff";
+}
+
+function colorForProvider(p: string) {
+  switch (p.toLowerCase()) {
+    case "openai":
+      return "#10a37f"; // ChatGPT green
+    case "anthropic":
+      return "#8b5cf6"; // purple
+    case "azure":
+      return "#0078d4"; // azure blue
+    case "local":
+      return "#6b7280"; // gray
+    default:
+      return "#374151"; // slate
+  }
+}
+
+function colorForModel(m: string) {
+  const key = m.toLowerCase();
+  if (key.includes("gpt-4o")) return "#0ea5e9"; // sky
+  if (key.includes("gpt-4")) return "#22c55e";  // green
+  if (key.includes("gpt-3")) return "#f59e0b";  // amber
+  if (key.includes("claude")) return "#a855f7"; // purple
+  return "#4b5563"; // default gray
+}
+
+function ProviderBadge({ provider, onClick }: { provider: string; onClick?: () => void }) {
+  const label =
+    provider.toLowerCase() === "openai"
+      ? "ChatGPT"
+      : provider.charAt(0).toUpperCase() + provider.slice(1);
+  const bg = colorForProvider(provider);
+  const fg = textColorOn(bg);
+  return (
+    <button
       className="badge"
-      title="Process working set • % of system RAM"
+      onClick={onClick}
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: 6,
         padding: "4px 8px",
         borderRadius: 8,
         border: "1px solid var(--border)",
-        background: "var(--muted)",
-        color: "var(--text)",
+        background: bg,
+        color: fg,
         fontSize: 12,
         lineHeight: 1,
+        userSelect: "none",
+        cursor: "pointer",
       }}
+      title="Change provider/model"
     >
-      RAM {text}
-    </span>
+      {label}
+    </button>
   );
 }
+
+
+function ModelBadge({ model, onClick }: { model: string; onClick?: () => void }) {
+  const bg = colorForModel(model || "unknown");
+  const fg = textColorOn(bg);
+  return (
+    <button
+      className="badge"
+      onClick={onClick}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        padding: "4px 8px",
+        borderRadius: 8,
+        border: "1px solid var(--border)",
+        background: bg,
+        color: fg,
+        fontSize: 12,
+        lineHeight: 1,
+        userSelect: "none",
+        cursor: "pointer",
+      }}
+      title="Change provider/model"
+    >
+      {model || "unknown"}
+    </button>
+  );
+}
+
 
 
 /* ---------------------- CodeCard ---------------------- */
@@ -378,6 +454,54 @@ export default function App() {
   // Settings modal
   const [showSettings, setShowSettings] = useState(false);
   const [cfg, setCfg] = useState<AppConfig | null>(null);
+    // Source/Model switching
+  type AISourceInfo = { id: "openai" | "chatly" | "v0"; label: string; envVar: string; hasKey: boolean; supported: boolean; models: string[] };
+  const [showSourceModal, setShowSourceModal] = useState(false);
+  const [sources, setSources] = useState<AISourceInfo[]>([]);
+  const [selProvider, setSelProvider] = useState<string>("openai");
+  const [selModel, setSelModel] = useState<string>("gpt-4o-mini");
+
+  // First-run walkthrough if a selected provider is missing keys
+  const [showWalkthrough, setShowWalkthrough] = useState(false);
+
+  async function openSourceModal() {
+    const data = await bridge?.getAISources?.();
+    if (data?.ok) {
+      setSources(data.sources || []);
+      setSelProvider(cfg?.PROVIDER || "openai");
+      setSelModel(cfg?.MODEL || "gpt-4o-mini");
+      setShowSourceModal(true);
+    } else {
+      // Fallback: just default to OpenAI entries
+      setSources([{ id: "openai", label: "ChatGPT", envVar: "OPENAI_API_KEY", hasKey: true, supported: true, models: ["gpt-4o-mini","gpt-4o","gpt-4.1-mini","gpt-4.1"] }]);
+      setSelProvider(cfg?.PROVIDER || "openai");
+      setSelModel(cfg?.MODEL || "gpt-4o-mini");
+      setShowSourceModal(true);
+    }
+  }
+
+  async function saveSourceModel() {
+    if (!cfg) return;
+    const next = { ...cfg, PROVIDER: selProvider, MODEL: selModel };
+    const res = await bridge!.updateConfig?.(next);
+    if (res?.ok) {
+      setCfg(res.config);
+      setShowSourceModal(false);
+    }
+  }
+
+  // Utility: is current cfg provider usable?
+  async function ensureProviderReady(): Promise<boolean> {
+    const data = await bridge?.getAISources?.();
+    if (!data?.ok) return true; // don't block if unknown
+    const src = (data.sources as AISourceInfo[]).find(s => s.id === (cfg?.PROVIDER || "openai"));
+    if (!src) return true;
+    if (src.supported && src.hasKey) return true;
+    // Block and show walkthrough
+    setShowWalkthrough(true);
+    return false;
+  }
+
 
   // Summary modal
   const [showSummary, setShowSummary] = useState(false);
@@ -389,13 +513,46 @@ export default function App() {
   const pendingIndexRef = useRef<number | null>(null);
   const thinkingTimerRef = useRef<number | null>(null);
 
+  // New: send/stop toggle & local cancel guard
+  const [isAsking, setIsAsking] = useState(false);
+  const requestIdRef = useRef(0);
+
   const chatRef = useRef<HTMLDivElement>(null);
 
-  // auto-scroll
+  // keep chat pinned to bottom unless the user scrolls up
+  const shouldStickRef = useRef(true);
+
+  const handleChatScroll = useCallback(() => {
+    const el = chatRef.current;
+    if (!el) return;
+    const threshold = 64; // px from bottom counts as "at bottom"
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    shouldStickRef.current = distance <= threshold;
+  }, []);
+
+  function scrollToBottom() {
+    const el = chatRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }
+
+
+  // auto-scroll when messages change, but only if user is near the bottom
+  useEffect(() => {
+    if (shouldStickRef.current) scrollToBottom();
+  }, [chat]);
+
+  // also react to DOM changes (code highlight growth, reveal animations)
   useEffect(() => {
     const el = chatRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [chat]);
+    if (!el) return;
+    const mo = new MutationObserver(() => {
+      if (shouldStickRef.current) scrollToBottom();
+    });
+    mo.observe(el, { childList: true, subtree: true, characterData: true });
+    return () => mo.disconnect();
+  }, []);
+
 
   // initial root + config load
   useEffect(() => {
@@ -428,6 +585,26 @@ export default function App() {
     const off = bridge?.onExecPending?.((req) => setPending(req));
     return () => {
       if (off) off();
+    };
+  }, [bridge]);
+
+  useEffect(() => {
+    const off = bridge?.onMenu?.((cmd) => {
+      if (cmd === "openSettings") openSettings();
+      else if (cmd === "summarize") summarizeNow();
+      else if (cmd === "stop") cancelAsk();
+      else if (cmd === "reloadConfigAfterRootPick") {
+        // re-pull config so badges and root reflect the change
+        bridge?.getConfig?.().then((res) => {
+          if (res?.ok) {
+            setCfg(res.config);
+            setRoot(res.root || res.config.ROOT_DIR || "");
+          }
+        });
+      }
+    });
+    return () => {
+      if (typeof off === "function") off();
     };
   }, [bridge]);
 
@@ -479,7 +656,7 @@ export default function App() {
         lang: lang || "",
       };
       setAttachments((a) => [...a, att]);
-      setChat((c) => [...c, { from: "ai", text: `Attached ${name} (${fmtBytes(att.size)})`, ts: Date.now() }]);
+      setChat((c) => [...c, { from: "system", text: `Attached ${name} (${fmtBytes(att.size)})`, ts: Date.now() }]);
     },
     [bridge]
   );
@@ -528,6 +705,12 @@ export default function App() {
   async function send() {
     const q = input.trim();
     if (!q && attachments.length === 0) return;
+    // Block and show walkthrough if selected provider lacks a key/support
+    const ready = await ensureProviderReady();
+    if (!ready) return;
+
+    setIsAsking(true);
+    const myId = ++requestIdRef.current;
 
     // Echo to chat (prompt + filenames/sizes)
     const filesLine = attachments.length ? " • " + attachments.map((a) => `${a.name} (${fmtBytes(a.size)})`).join(", ") : "";
@@ -567,6 +750,9 @@ export default function App() {
     try {
       if (!bridge?.askAI) throw new Error("Preload bridge not available");
       const a = await bridge.askAI(prompt);
+      // If canceled or superseded, ignore this response
+      if (myId !== requestIdRef.current) return;
+
       const t1 = Date.now();
       const aiText = toText(a) || "(no text)";
 
@@ -582,6 +768,9 @@ export default function App() {
 
       await maybeAutoExec(aiText);
     } catch (err: any) {
+      // If canceled or superseded, ignore error UI
+      if (myId !== requestIdRef.current) return;
+
       const t1 = Date.now();
       clearInterval(thinkingTimerRef.current!);
       setChat((c) => {
@@ -600,6 +789,28 @@ export default function App() {
       });
     } finally {
       pendingIndexRef.current = null;
+      setIsAsking(false);
+    }
+  }
+
+  // Cancel current ask (UI-level guard; also calls main if available)
+  async function cancelAsk() {
+    try {
+      // bump local token so any pending response is ignored
+      requestIdRef.current++;
+      await bridge?.cancelAI?.();
+      if (thinkingTimerRef.current) clearInterval(thinkingTimerRef.current);
+      setChat((c) => {
+        const i = pendingIndexRef.current;
+        const t = Date.now();
+        if (i == null || i >= c.length) return [...c, { from: "ai", text: "Canceled.", ts: t, anim: "appear" }];
+        const copy = c.slice();
+        copy[i] = { from: "ai", text: "Canceled.", ts: t, anim: "appear" } as any;
+        return copy;
+      });
+    } finally {
+      pendingIndexRef.current = null;
+      setIsAsking(false);
     }
   }
 
@@ -619,7 +830,7 @@ export default function App() {
       await bridge!.requestExec({ id: crypto.randomUUID(), command: cmd, cwd: root || "." });
       // modal shown via onExecPending
     } catch (e: any) {
-      setChat((c) => [...c, { from: "ai", text: "Auto-exec setup failed: " + (e?.message ?? e), ts: Date.now() }]);
+      setChat((c) => [...c, { from: "system", text: "Auto-exec setup failed: " + (e?.message ?? e), ts: Date.now() }]);
     }
   }
 
@@ -629,7 +840,7 @@ export default function App() {
       if (!bridge?.requestExec) throw new Error("Preload bridge not available");
       await bridge.requestExec({ id: crypto.randomUUID(), command: "Get-ChildItem -Force", cwd: root || "." });
     } catch (err: any) {
-      setChat((c) => [...c, { from: "ai", text: "Exec request error: " + (err?.message ?? String(err)), ts: Date.now() }]);
+      setChat((c) => [...c, { from: "system", text: "Exec request error: " + (err?.message ?? String(err)), ts: Date.now() }]);
     }
   }
 
@@ -638,7 +849,7 @@ export default function App() {
     try {
       const res = await bridge!.approveExec(pending.id, yes);
       if (res?.status === "error") {
-        setChat((c) => [...c, { from: "ai", text: `Execution error: ${res.error || "unknown"}`, ts: Date.now() }]);
+        setChat((c) => [...c, { from: "system", text: `Execution error: ${res.error || "unknown"}`, ts: Date.now() }]);
       } else if (yes && res?.status === "done") {
         const out = [
           `Exit: ${res.code}`,
@@ -647,12 +858,12 @@ export default function App() {
         ]
           .filter(Boolean)
           .join("\n\n");
-        setChat((c) => [...c, { from: "ai", text: "```txt\n" + out + "\n```", ts: Date.now() }]);
+        setChat((c) => [...c, { from: "system", text: "```txt\n" + out + "\n```", ts: Date.now() }]);
       } else {
-        setChat((c) => [...c, { from: "ai", text: "Execution rejected.", ts: Date.now() }]);
+        setChat((c) => [...c, { from: "system", text: "Execution rejected.", ts: Date.now() }]);
       }
     } catch (e: any) {
-      setChat((c) => [...c, { from: "ai", text: "Approval error: " + (e?.message ?? e), ts: Date.now() }]);
+      setChat((c) => [...c, { from: "system", text: "Approval error: " + (e?.message ?? e), ts: Date.now() }]);
     } finally {
       setPending(null);
     }
@@ -710,20 +921,20 @@ export default function App() {
     try {
       await bridge!.writeFile(`${base}-snapshot.json`, JSON.stringify(summaryJSON, null, 2));
       await bridge!.writeFile(`${base}-carryover.md`, carryoverMD || "");
-      setChat((c) => [...c, { from: "ai", text: `Saved snapshots → ${base}-*.{json,md}`, ts: Date.now() }]);
+      setChat((c) => [...c, { from: "system", text: `Saved snapshots → ${base}-*.{json,md}`, ts: Date.now() }]);
     } catch (e: any) {
-      setChat((c) => [...c, { from: "ai", text: "Save summary error: " + (e?.message ?? e), ts: Date.now() }]);
+      setChat((c) => [...c, { from: "system", text: "Save summary error: " + (e?.message ?? e), ts: Date.now() }]);
     }
   }
 
   function renderMessage(m: Msg, i: number) {
     const text = toText(m.text);
-    const blocks = m.from === "ai" ? extractCodeBlocks(text) : [];
+    const blocks = m.from !== "user" ? extractCodeBlocks(text) : [];
     const plain = text.replace(/```[\s\S]*?```/g, "").trim();
     const showMeta = m.from === "ai" && (m.ts || m.durMs !== undefined);
     return (
       <div className={`msg ${m.anim || ""}`} key={i}>
-        <b>{m.from === "user" ? "You" : "AI"}</b>
+        <b>{m.from === "user" ? "You" : m.from === "system" ? "System" : "AI"}</b>
         {showMeta && (
           <span style={{ marginLeft: 8, color: "#9ca3af", fontSize: 12 }}>
             {fmtClock(m.ts)}
@@ -736,7 +947,7 @@ export default function App() {
             key={`${i}-${idx}`}
             block={b}
             index={idx}
-            onSaved={(p) => setChat((c) => [...c, { from: "ai", text: `Saved → ${p}`, ts: Date.now() }])}
+            onSaved={(p) => setChat((c) => [...c, { from: "system", text: `Saved → ${p}`, ts: Date.now() }])}
           />
         ))}
       </div>
@@ -746,23 +957,44 @@ export default function App() {
   return (
     <div
       className={`container ${summaryBusy ? "busy" : ""}`}
-      style={summaryBusy ? { filter: "grayscale(0.3) opacity(0.7)" } : undefined}
+      style={{
+        ...(summaryBusy ? { filter: "grayscale(0.3) opacity(0.7)" } : null),
+        display: "flex",
+        flexDirection: "column",
+        minHeight: "100vh",
+      }}
     >
+
       {/* Header with Summarize + Settings */}
-      <div className="header">
-        <div style={{ fontWeight: 600 }}>Kage 2.0</div>
+      <div
+        className="header"
+        style={{
+          position: "sticky",
+          top: 0,
+          zIndex: 6,
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          flexWrap: "nowrap",
+          paddingTop: 8,
+          paddingBottom: 8,
+          borderBottom: "1px solid var(--border)",
+          background: "rgba(5,8,16,0.8)",
+          backdropFilter: "blur(3px)",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 10, fontWeight: 600 }}>
+          Kage 2.0
+          {!!cfg && (
+            <React.Fragment>
+              <ProviderBadge provider={cfg.PROVIDER || "openai"} onClick={openSourceModal} />
+              <ModelBadge model={cfg.MODEL || "gpt-4o-mini"} onClick={openSourceModal} />
+            </React.Fragment>
+          )}
+        </div>
+
         <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-          <MemoryBadge bridge={bridge} />   {/* ← new */}
-          <button
-            className="icon-btn"
-            onClick={summarizeNow}
-            disabled={summaryBusy}
-            title={summaryBusy ? "Summarizing…" : "Summarize & Save"}
-            style={{ opacity: summaryBusy ? 0.6 : 1 }}
-          >
-            <IconSparkle />
-          </button>
-          
+          {/* Summarize button removed (now in menu) */}
           <button className="icon-btn" onClick={openSettings} title="Settings">
             <IconGear />
           </button>
@@ -770,7 +1002,17 @@ export default function App() {
       </div>
 
       {/* Chat */}
-      <div className="chat" ref={chatRef}>
+      <div
+        className="chat"
+        ref={chatRef}
+        onScroll={handleChatScroll}
+        style={{
+          flex: "1 1 auto",
+          overflowY: "auto",
+          overscrollBehavior: "contain",
+          scrollbarGutter: "stable both-edges",
+        }}
+      >
         {chat.length === 0 && (
           <div style={{ color: "#9ca3af" }}>
             Type a prompt, attach files (paperclip or paste), then hit Send. Open <b>Settings</b> (gear) to change the working directory
@@ -781,9 +1023,23 @@ export default function App() {
       </div>
 
       {/* Input row */}
-      <div className="row">
-        <button className="icon-btn" onClick={importFile} title="Import file for AI">
-          <IconImport />
+      <div
+        className="row"
+        style={{
+          flexWrap: "nowrap",
+          position: "sticky",
+          bottom: 0,
+          background: "rgba(5,8,16,0.8)",
+          backdropFilter: "blur(3px)",
+          borderTop: "1px solid var(--border)",
+          paddingTop: 8,
+          paddingBottom: 8,
+          zIndex: 5,
+        }}
+      >
+
+        <button className="icon-btn" onClick={importFile} title="Attach file">
+          <IconPaperclip />
         </button>
 
         {/* attached chips */}
@@ -805,23 +1061,49 @@ export default function App() {
           </div>
         )}
 
-        <div className="input-wrap" style={{ marginLeft: 8 }}>
+        <div
+          className="input-wrap"
+          style={{
+            marginLeft: 8,
+            display: "grid",
+            gridTemplateColumns: "1fr 36px", // input | fixed button slot
+            alignItems: "center",
+            gap: 8,
+            minWidth: 0,                     // allow shrinking instead of wrapping
+          }}
+        >
           <input
             type="text"
             placeholder="Ask the model… (paste to attach)"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && send()}
+            onKeyDown={(e) => {
+              if ((cfg?.SEND_ON_ENTER ?? true) && e.key === "Enter") send();
+            }}
             onPaste={onPasteToAttach}
+            style={{ minWidth: 0 }}          // prevent overflow pushing the button down
           />
-          <button className="icon-btn send-btn primary" onClick={send} title="Send">
-            <IconSend />
-          </button>
-        </div>
 
-        <button className="icon-btn" onClick={testExec} title="Request command approval">
-          <IconArrowOut />
-        </button>
+          {!isAsking ? (
+            <button
+              className="icon-btn send-btn primary"
+              onClick={send}
+              title="Send"
+              style={{ width: 32, height: 32 }} // fixed, matches Stop
+            >
+              <IconSend />
+            </button>
+          ) : (
+            <button
+              className="icon-btn danger"
+              onClick={cancelAsk}
+              title="Stop"
+              style={{ width: 32, height: 32 }} // fixed, matches Send
+            >
+              <IconStop />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Approval modal */}
@@ -873,6 +1155,18 @@ export default function App() {
                     <IconFolderPlus />
                   </button>
                 </div>
+              </div>
+
+              <div className="field-row" style={{ display: "grid", gridTemplateColumns: "160px 1fr auto", gap: 10, alignItems: "center" }}>
+                <label style={{ color: "var(--sub)" }}>AI Source/Model</label>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span className="mono" style={{ opacity: 0.9 }}>
+                    {(cfg.PROVIDER || "openai")} / {(cfg.MODEL || "gpt-4o-mini")}
+                  </span>
+                </div>
+                <button className="icon-btn" onClick={openSourceModal} title="Change Source/Model">
+                  Change…
+                </button>
               </div>
 
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -934,6 +1228,99 @@ export default function App() {
               <button className="icon-btn ok" onClick={saveSettings}>
                 Save
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Source/Model switcher modal */}
+      {showSourceModal && (
+        <div className="modal-backdrop" onClick={() => setShowSourceModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <header>Change Source & Model</header>
+            <div className="body" style={{ display: "grid", gap: 12 }}>
+              {(sources || []).map((s) => {
+                const disabled = !s.hasKey || !s.supported;
+                return (
+                  <div key={s.id} style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr auto",
+                    gap: 10,
+                    opacity: disabled ? 0.5 : 1,
+                    alignItems: "center",
+                    border: "1px solid var(--border)",
+                    borderRadius: 10,
+                    padding: 10,
+                    background: "var(--panel)",
+                  }}>
+                    <div style={{ fontWeight: 600 }}>{s.label}</div>
+                    <select
+                      disabled={disabled}
+                      value={s.id === selProvider ? selModel : (s.models?.[0] || "")}
+                      onChange={(e) => {
+                        if (s.id === selProvider) setSelModel(e.target.value);
+                      }}
+                      style={{
+                        width: "100%",
+                        padding: 8,
+                        background: "var(--muted)",
+                        color: "var(--text)",
+                        border: "1px solid var(--border)",
+                        borderRadius: 8,
+                      }}
+                    >
+                      {(s.models?.length ? s.models : ["(no models)"]).map((m) => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <input
+                        type="radio"
+                        name="provider"
+                        disabled={disabled}
+                        checked={selProvider === s.id}
+                        onChange={() => {
+                          setSelProvider(s.id);
+                          if (s.models?.length) setSelModel(s.models[0]);
+                        }}
+                        title={disabled ? (!s.supported ? "Not supported yet" : `Missing ${s.envVar}`) : "Select source"}
+                      />
+                      <span style={{ fontSize: 12, color: "var(--sub)" }}>
+                        {disabled ? (!s.supported ? "Not supported yet" : `Missing ${s.envVar}`) : "Available"}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="row-btns">
+              <button className="icon-btn" onClick={() => setShowSourceModal(false)}>Cancel</button>
+              <button className="icon-btn ok" onClick={saveSourceModel} disabled={!sources.length}>Save Default</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Walkthrough for missing API key */}
+      {showWalkthrough && (
+        <div className="modal-backdrop" onClick={() => setShowWalkthrough(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <header>Set up your API key</header>
+            <div className="body" style={{ display: "grid", gap: 12 }}>
+              <p>The selected source isn’t ready yet. You’ll need to set an environment variable with your API key:</p>
+              <ul>
+                <li><b>ChatGPT (OpenAI):</b> set <code>OPENAI_API_KEY</code></li>
+                <li><b>Chatly:</b> set <code>CHATLY_API_KEY</code></li>
+                <li><b>v0.dev:</b> set <code>V0_API_KEY</code> (or <code>VERCEL_V0_API_KEY</code>)</li>
+              </ul>
+              <p>After updating your <code>.env.local</code>, restart the app.</p>
+              <p><i>TODO:</i> full walkthrough: docs link + copyable CLI to create <code>.env.local</code>.</p>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <button className="icon-btn ok" onClick={() => { setShowWalkthrough(false); openSourceModal(); }}>
+                  Open Source/Model Picker
+                </button>
+                <button className="icon-btn" onClick={() => setShowWalkthrough(false)}>Close</button>
+              </div>
             </div>
           </div>
         </div>
