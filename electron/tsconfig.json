@@ -1,0 +1,16 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "../dist-electron",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "target": "ES2022",
+    "jsx": "react-jsx",
+    "types": ["node", "electron"],
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": false,
+    "allowSyntheticDefaultImports": false
+  },
+  "include": ["./**/*.ts", "./**/*.tsx"]
+}

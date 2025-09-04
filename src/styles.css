@@ -1,0 +1,326 @@
+/* =========================
+   Theme
+   ========================= */
+:root {
+  --bg: #0b1020;
+  --panel: #0e1629;
+  --muted: #0b1324;
+  --border: #1f2937;
+  --text: #e5e7eb;
+  --sub: #9ca3af;
+  --accent: #60a5fa;
+  --danger: #ef4444;
+  --ok: #10b981;
+  --shadow: 0 8px 24px rgba(0,0,0,0.35);
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: radial-gradient(1200px 1200px at 10% -20%, rgba(96,165,250,0.08), transparent 60%) ,
+              radial-gradient(1000px 1000px at 110% 120%, rgba(16,185,129,0.06), transparent 60%) ,
+              var(--bg);
+  color: var(--text);
+  font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+}
+
+/* =========================
+   Layout
+   ========================= */
+.container {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 100%;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: linear-gradient(0deg, rgba(255,255,255,0.02), rgba(255,255,255,0.02)), var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px 12px;
+  box-shadow: var(--shadow);
+}
+
+.chat {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: var(--shadow);
+}
+
+.msg {
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  animation: fade-in 120ms ease-out;
+}
+.msg.appear { animation: fade-in-up 220ms ease-out; }
+@keyframes fade-in { from { opacity: 0.6 } to { opacity: 1 } }
+@keyframes fade-in-up { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: translateY(0) } }
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 8px;
+  box-shadow: var(--shadow);
+}
+
+.input-wrap {
+  position: relative;
+  flex: 1;
+}
+.input-wrap input {
+  width: 100%;
+  padding: 10px 40px 10px 10px;
+  background: var(--muted);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  outline: none;
+}
+.input-wrap .send-btn {
+  position: absolute;
+  right: 2px;
+  top: 3px;
+  transform: translateY(-1%);
+}
+
+/* =========================
+   Buttons, badges
+   ========================= */
+.icon-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: var(--muted);
+  border: 1px solid var(--border);
+  color: var(--text);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+
+/* If the button does NOT contain an <svg>, treat it as a text button */
+.icon-btn:not(:has(svg)) {
+  width: auto;              /* grow with content */
+  height: 32px;             /* keep consistent height */
+  padding: 0 12px;          /* breathing room for text */
+  display: inline-flex;     /* better text alignment */
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  white-space: nowrap;      /* keep “Cancel”/“Save” on one line */
+}
+
+.icon-btn:hover { transform: translateY(-1px); border-color: #2b3a4f; }
+.icon-btn.primary { background: #13213b; border-color: #20304a; }
+.icon-btn.ok { background: rgba(16,185,129,0.1); border-color: rgba(16,185,129,0.25); }
+.icon-btn.danger { background: rgba(239,68,68,0.08); border-color: rgba(239,68,68,0.25); }
+.icon-btn.ghost { background: rgba(255,255,255,0.04); }
+.icon-btn:disabled { opacity: 0.6; cursor: default; transform: none; }
+.icon-btn:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
+
+
+.badge {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+/* =========================
+   Code card
+   ========================= */
+.code-card {
+  position: relative;
+  border: 1px solid var(--border);
+  background: #0a1322;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.code-card pre {
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  background: transparent;
+}
+.code-card code.hljs {
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.lang-chip {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  font-size: 11px;
+  color: var(--sub);
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.floating-actions {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 6px;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+.code-card:hover .floating-actions {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* =========================
+   Modal
+   ========================= */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 9, 16, 0.55);
+  backdrop-filter: blur(2px);
+  display: grid;
+  place-items: center;
+  z-index: 999;
+}
+.modal {
+  width: min(720px, calc(100% - 24px));
+  max-height: calc(100vh - 24px);
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+}
+.modal > header {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 700;
+}
+.modal .body {
+  padding: 12px 14px;
+}
+.modal .body pre {
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  overflow: auto;
+}
+.modal .row-btns {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  padding: 12px 14px;
+  border-top: 1px solid var(--border);
+}
+
+/* Scrollable body variant (Summary) */
+.modal .body.scrollable {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+/* =========================
+   Screen overlay (Summarize)
+   ========================= */
+.container.busy { filter: grayscale(0.3) opacity(0.7); }
+
+.screen-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 8, 16, 0.6);
+  backdrop-filter: blur(2px);
+  z-index: 9999;
+  display: grid;
+  place-items: center;
+  gap: 12px;
+}
+.screen-overlay .overlay-text {
+  color: var(--text);
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+.loader {
+  width: 32px;
+  height: 32px;
+  border: 3px solid rgba(255,255,255,0.2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* =========================
+   Scrollbars (themed)
+   ========================= */
+.chat,
+.modal .body,
+.modal .body.scrollable,
+.code-card pre {
+  scrollbar-width: thin;
+  scrollbar-color: #1f2937 transparent; /* Firefox */
+}
+
+/* WebKit */
+.chat::-webkit-scrollbar,
+.modal .body::-webkit-scrollbar,
+.modal .body.scrollable::-webkit-scrollbar,
+.code-card pre::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.chat::-webkit-scrollbar-track,
+.modal .body::-webkit-scrollbar-track,
+.modal .body.scrollable::-webkit-scrollbar-track,
+.code-card pre::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat::-webkit-scrollbar-thumb,
+.modal .body::-webkit-scrollbar-thumb,
+.modal .body.scrollable::-webkit-scrollbar-thumb,
+.code-card pre::-webkit-scrollbar-thumb {
+  background: #1f2937;
+  border-radius: 10px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.chat::-webkit-scrollbar-thumb:hover,
+.modal .body::-webkit-scrollbar-thumb:hover,
+.modal .body.scrollable::-webkit-scrollbar-thumb:hover,
+.code-card pre::-webkit-scrollbar-thumb:hover {
+  background: #2b3a4f;
+}
+
+/* Selection */
+::selection { background: rgba(96,165,250,0.35); color: #fff; }

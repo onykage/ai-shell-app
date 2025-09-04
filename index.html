@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="Content-Security-Policy"
+    content="
+      default-src 'self';
+      script-src 'self' 'unsafe-eval' blob:;
+      style-src 'self' 'unsafe-inline';
+      img-src 'self' data: blob:;
+      connect-src 'self' ws://localhost:5173 http://localhost:5173 ws://127.0.0.1:5173 http://127.0.0.1:5173 https://api.openai.com;
+      font-src 'self' data:;
+      frame-src 'none';
+    ">
+    <title>AI Shell</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <pre id="fatal" style="display:none;white-space:pre-wrap;color:#f87171;background:#111827;padding:8px;border:1px solid #ef4444;border-radius:8px;margin:8px"></pre>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
