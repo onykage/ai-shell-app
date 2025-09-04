@@ -2,9 +2,9 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 // electron/main.ts
 const electron_1 = require("electron");
-const path = require("node:path");
 const fs = require("node:fs");
-const node_fs_1 = require("node:fs");
+const fsp = require("node:fs/promises");
+const path = require("node:path");
 const os = require("node:os");
 const node_child_process_1 = require("node:child_process");
 const node_child_process_2 = require("node:child_process");
@@ -52,8 +52,8 @@ function readConfig() {
 }
 async function writeConfig(patch) {
     const next = { ...readConfig(), ...patch };
-    await node_fs_1.promises.mkdir(path.dirname(configPath()), { recursive: true });
-    await node_fs_1.promises.writeFile(configPath(), JSON.stringify(next, null, 2), "utf8");
+    await fsp.mkdir(path.dirname(configPath()), { recursive: true });
+    await fsp.writeFile(configPath(), JSON.stringify(next, null, 2), "utf8");
     return next;
 }
 // ─────────────────────────────────────────────────────────────
@@ -61,7 +61,7 @@ async function writeConfig(patch) {
 // ─────────────────────────────────────────────────────────────
 async function ensureJail() {
     const root = readConfig().ROOT_DIR;
-    await node_fs_1.promises.mkdir(root, { recursive: true });
+    await fsp.mkdir(root, { recursive: true });
     (0, jail_1.setRootDir)(root); // make sure jail.ts knows the current root
 }
 // ─────────────────────────────────────────────────────────────
@@ -79,6 +79,7 @@ async function createWindow() {
             contextIsolation: true,
             nodeIntegration: false,
             sandbox: true,
+            webviewTag: true, // ← enable <webview> for the Editor pane
         },
     });
     const DEV_URL = process.env.VITE_DEV_SERVER_URL || process.env.DEV_SERVER_URL || "";
@@ -116,6 +117,13 @@ function createAppMenu() {
             accelerator: "CmdOrCtrl+,",
             click: () => mainWindow?.webContents.send("menu:cmd", "openSettings"),
         },
+        { label: "Toggle Editor Console",
+            accelerator: "CmdOrCtrl+Shift+K",
+            click: () => mainWindow?.webContents.send("menu:cmd", "toggleEditorConsole"),
+        },
+        { label: "Open…", accelerator: "CmdOrCtrl+O", click: () => mainWindow?.webContents.send("menu:cmd", "file:open") },
+        { label: "Save", accelerator: "CmdOrCtrl+S", click: () => mainWindow?.webContents.send("menu:cmd", "file:save") },
+        { label: "Save As…", accelerator: "CmdOrCtrl+Shift+S", click: () => mainWindow?.webContents.send("menu:cmd", "file:saveAs") },
         {
             label: "Select Working Directory…",
             click: async () => {
@@ -279,6 +287,60 @@ function registerIpc() {
         (0, jail_1.setRootDir)(next.ROOT_DIR);
         return { ok: true, root: next.ROOT_DIR };
     });
+    // Pick a file (constrained to jail), read it, report preview-ability + file:// URL
+    electron_1.ipcMain.handle("editor:openDialog", async () => {
+        const root = (0, jail_1.getRootDir)();
+        const res = await electron_1.dialog.showOpenDialog({
+            title: "Open File",
+            defaultPath: root,
+            properties: ["openFile"],
+        });
+        if (res.canceled || !res.filePaths[0])
+            return { ok: false, canceled: true };
+        // Normalize & verify the path stays inside the jail (Windows-safe)
+        const absPicked = path.normalize(res.filePaths[0]);
+        const rootNorm = path.normalize(root);
+        // Must be the same drive and inside root
+        const inside = absPicked.toLowerCase() === rootNorm.toLowerCase() ||
+            absPicked.toLowerCase().startsWith(rootNorm.toLowerCase() + path.sep);
+        if (!inside) {
+            await electron_1.dialog.showMessageBox({
+                type: "error",
+                title: "Outside Working Directory",
+                message: "Selected file is outside the Working Directory (jail).",
+                detail: `Working Directory:\n${root}\n\nSelected:\n${absPicked}`,
+            });
+            return { ok: false, canceled: true, reason: "outside-jail" };
+        }
+        const rel = path.relative(rootNorm, absPicked);
+        const content = await fsp.readFile(absPicked, "utf8");
+        const ext = path.extname(absPicked).toLowerCase();
+        const previewable = [".html", ".htm", ".md", ".markdown"].includes(ext);
+        const fileURL = "file://" + absPicked.replace(/\\/g, "/");
+        return { ok: true, rel, abs: absPicked, content, previewable, fileURL };
+    });
+    electron_1.ipcMain.handle("editor:save", async (_e, args) => {
+        const abs = (0, jail_1.jailedPath)(args.rel);
+        await fsp.writeFile(abs, args.content, "utf8");
+        return { ok: true };
+    });
+    electron_1.ipcMain.handle("editor:saveAs", async (_e, args) => {
+        const root = (0, jail_1.getRootDir)();
+        const defaultPath = args.suggestRel ? path.join(root, args.suggestRel) : root;
+        const res = await electron_1.dialog.showSaveDialog({
+            title: "Save As",
+            defaultPath,
+        });
+        if (res.canceled || !res.filePath)
+            return { ok: false, canceled: true };
+        const rel = path.relative(root, res.filePath);
+        const abs = (0, jail_1.jailedPath)(rel);
+        await fsp.writeFile(abs, args.content, "utf8");
+        const ext = path.extname(abs).toLowerCase();
+        const previewable = [".html", ".htm", ".md", ".markdown"].includes(ext);
+        const fileURL = "file://" + abs.replace(/\\/g, "/");
+        return { ok: true, rel, abs, previewable, fileURL };
+    });
     // File ops (jailed)
     electron_1.ipcMain.handle("fs:write", async (_e, arg1, arg2) => {
         try {
@@ -287,8 +349,8 @@ function registerIpc() {
             if (!rel)
                 throw new Error("Missing rel");
             const dst = (0, jail_1.jailedPath)(rel); // ✅ single-arg form uses current jail root
-            await node_fs_1.promises.mkdir(path.dirname(dst), { recursive: true });
-            await node_fs_1.promises.writeFile(dst, String(content ?? ""), "utf8");
+            await fsp.mkdir(path.dirname(dst), { recursive: true });
+            await fsp.writeFile(dst, String(content ?? ""), "utf8");
             return { ok: true, rel };
         }
         catch (err) {
@@ -303,8 +365,8 @@ function registerIpc() {
         });
         if (res.canceled || !res.filePath)
             return { canceled: true };
-        await node_fs_1.promises.mkdir(path.dirname(res.filePath), { recursive: true });
-        await node_fs_1.promises.writeFile(res.filePath, content ?? "", "utf8");
+        await fsp.mkdir(path.dirname(res.filePath), { recursive: true });
+        await fsp.writeFile(res.filePath, content ?? "", "utf8");
         // If saved into jail, return a rel path too
         let rel;
         try {
@@ -321,12 +383,12 @@ function registerIpc() {
         if (res.canceled || !res.filePaths?.[0])
             return { canceled: true };
         const p = res.filePaths[0];
-        const stat = await node_fs_1.promises.stat(p);
+        const stat = await fsp.stat(p);
         const MAX = 2 * 1024 * 1024;
         let content = "";
         let truncated = false;
         try {
-            const buf = await node_fs_1.promises.readFile(p);
+            const buf = await fsp.readFile(p);
             if (buf.length > MAX) {
                 content = buf.subarray(0, MAX).toString("utf8");
                 truncated = true;

@@ -1,15 +1,14 @@
 // electron/main.ts
-import { app, BrowserWindow, dialog, ipcMain, shell, Menu } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
+import * as fs from "node:fs"; 
+import * as fsp from "node:fs/promises";
 import * as path from "node:path";
-import * as fs from "node:fs";
-import { promises as fsp } from "node:fs";
 import * as os from "node:os";
 import { spawn } from "node:child_process";
 import { exec as cpExec } from "node:child_process";
 import type { ExecOptionsWithStringEncoding } from "node:child_process";
 import { promisify } from "node:util";
 import * as dotenv from "dotenv";
-
 import { getRootDir, setRootDir, jailedPath } from "./jail";
 
 const exec = promisify(cpExec);
@@ -97,6 +96,7 @@ async function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      webviewTag: true, // ← enable <webview> for the Editor pane
     },
   });
 
@@ -139,6 +139,13 @@ function createAppMenu() {
       accelerator: "CmdOrCtrl+,",
       click: () => mainWindow?.webContents.send("menu:cmd", "openSettings"),
     },
+    { label: "Toggle Editor Console",
+      accelerator: "CmdOrCtrl+Shift+K",
+      click: () => mainWindow?.webContents.send("menu:cmd", "toggleEditorConsole"),
+    },
+    { label: "Open…", accelerator: "CmdOrCtrl+O", click: () => mainWindow?.webContents.send("menu:cmd", "file:open") },
+    { label: "Save", accelerator: "CmdOrCtrl+S", click: () => mainWindow?.webContents.send("menu:cmd", "file:save") },
+    { label: "Save As…", accelerator: "CmdOrCtrl+Shift+S", click: () => mainWindow?.webContents.send("menu:cmd", "file:saveAs") },
     {
       label: "Select Working Directory…",
       click: async () => {
@@ -330,6 +337,69 @@ function registerIpc() {
     const next = await writeConfig({ ROOT_DIR: res.filePaths[0] });
     setRootDir(next.ROOT_DIR);
     return { ok: true, root: next.ROOT_DIR };
+  });
+  // Pick a file (constrained to jail), read it, report preview-ability + file:// URL
+    ipcMain.handle("editor:openDialog", async () => {
+    const root = getRootDir();
+    const res = await dialog.showOpenDialog({
+      title: "Open File",
+      defaultPath: root,
+      properties: ["openFile"],
+    });
+    if (res.canceled || !res.filePaths[0]) return { ok: false, canceled: true };
+
+    // Normalize & verify the path stays inside the jail (Windows-safe)
+    const absPicked = path.normalize(res.filePaths[0]);
+    const rootNorm  = path.normalize(root);
+
+    // Must be the same drive and inside root
+    const inside =
+      absPicked.toLowerCase() === rootNorm.toLowerCase() ||
+      absPicked.toLowerCase().startsWith(rootNorm.toLowerCase() + path.sep);
+
+    if (!inside) {
+      await dialog.showMessageBox({
+        type: "error",
+        title: "Outside Working Directory",
+        message: "Selected file is outside the Working Directory (jail).",
+        detail: `Working Directory:\n${root}\n\nSelected:\n${absPicked}`,
+      });
+      return { ok: false, canceled: true, reason: "outside-jail" };
+    }
+
+    const rel = path.relative(rootNorm, absPicked);
+    const content = await fsp.readFile(absPicked, "utf8");
+    const ext = path.extname(absPicked).toLowerCase();
+    const previewable = [".html", ".htm", ".md", ".markdown"].includes(ext);
+    const fileURL = "file://" + absPicked.replace(/\\/g, "/");
+
+    return { ok: true, rel, abs: absPicked, content, previewable, fileURL };
+  });
+
+
+  ipcMain.handle("editor:save", async (_e, args: { rel: string; content: string }) => {
+    const abs = jailedPath(args.rel);
+    await fsp.writeFile(abs, args.content, "utf8");
+    return { ok: true };
+  });
+
+  ipcMain.handle("editor:saveAs", async (_e, args: { suggestRel?: string; content: string }) => {
+    const root = getRootDir();
+    const defaultPath = args.suggestRel ? path.join(root, args.suggestRel) : root;
+    const res = await dialog.showSaveDialog({
+      title: "Save As",
+      defaultPath,
+    });
+    if (res.canceled || !res.filePath) return { ok: false, canceled: true };
+
+    const rel = path.relative(root, res.filePath);
+    const abs = jailedPath(rel);
+    await fsp.writeFile(abs, args.content, "utf8");
+
+    const ext = path.extname(abs).toLowerCase();
+    const previewable = [".html", ".htm", ".md", ".markdown"].includes(ext);
+    const fileURL = "file://" + abs.replace(/\\/g, "/");
+    return { ok: true, rel, abs, previewable, fileURL };
   });
 
   // File ops (jailed)

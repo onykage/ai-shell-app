@@ -43,4 +43,9 @@ contextBridge.exposeInMainWorld("api", {
     ipcRenderer.on("menu:cmd", handler);
     return () => ipcRenderer.removeListener("menu:cmd", handler);
   },
+  openEditorFile: () => ipcRenderer.invoke("editor:openDialog"),
+  saveEditorFile: (rel: string, content: string) => ipcRenderer.invoke("editor:save", { rel, content }),
+  saveEditorFileAs: (suggestRel: string | undefined, content: string) =>
+    ipcRenderer.invoke("editor:saveAs", { suggestRel, content }),
+
 });

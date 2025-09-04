@@ -29,4 +29,7 @@ electron_1.contextBridge.exposeInMainWorld("api", {
         electron_1.ipcRenderer.on("menu:cmd", handler);
         return () => electron_1.ipcRenderer.removeListener("menu:cmd", handler);
     },
+    openEditorFile: () => electron_1.ipcRenderer.invoke("editor:openDialog"),
+    saveEditorFile: (rel, content) => electron_1.ipcRenderer.invoke("editor:save", { rel, content }),
+    saveEditorFileAs: (suggestRel, content) => electron_1.ipcRenderer.invoke("editor:saveAs", { suggestRel, content }),
 });

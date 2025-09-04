@@ -3,6 +3,28 @@ import hljs from "highlight.js";
 import "highlight.js/styles/github-dark.css";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+import CodeMirror from "@uiw/react-codemirror";
+import { EditorState } from "@codemirror/state";
+import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { EditorView, lineNumbers, highlightActiveLineGutter, keymap, highlightActiveLine } from '@codemirror/view'
+
+
+const cmPaneScrollTheme = EditorView.theme({
+  "&": { height: "auto" },
+  ".cm-scroller": { overflow: "visible" }
+});
+import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
+import { oneDark } from "@codemirror/theme-one-dark";
+import { javascript } from "@codemirror/lang-javascript";
+import { html } from "@codemirror/lang-html";
+import { css } from "@codemirror/lang-css";
+import { json } from "@codemirror/lang-json";
+import { markdown } from "@codemirror/lang-markdown";
+import { python } from "@codemirror/lang-python";
+import { StreamLanguage } from "@codemirror/language";
+import { shell } from "@codemirror/legacy-modes/mode/shell";
+
+
 
 /* ---------------------- Bridge typing ---------------------- */
 declare global {
@@ -115,6 +137,34 @@ function fmtDuration(ms = 0) {
 function fmtClock(ts?: number) {
   return ts ? new Date(ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }) : "";
 }
+function cmLangForFilename(name?: string) {
+  const ext = (name?.split(".").pop() || "").toLowerCase();
+  switch (ext) {
+    case "js":  return javascript();
+    case "jsx": return javascript({ jsx: true });
+    case "ts":  return javascript({ typescript: true });
+    case "tsx": return javascript({ typescript: true, jsx: true });
+    case "html":
+    case "htm": return html();
+    case "css": return css();
+    case "json": return json();
+    case "md":
+    case "markdown": return markdown();
+    case "py":  return python();
+    case "sh":  return StreamLanguage.define(shell);
+    case "ps1": return StreamLanguage.define(shell); // fallback: use shell for PowerShell
+    default:    return []; // plain text
+  }
+}
+
+
+
+const cmTheme = EditorView.theme({
+  "&": { backgroundColor: "var(--panel)", color: "var(--text)", height: "100%" },
+  ".cm-gutters": { backgroundColor: "var(--panel)", color: "var(--sub)", borderRight: "1px solid var(--border)" },
+  ".cm-activeLine": { backgroundColor: "rgba(255,255,255,0.04)" },
+});
+
 function fmtBytes(n: number) {
   const u = ["B", "KB", "MB", "GB"];
   let i = 0;
@@ -424,7 +474,7 @@ function CodeCard({
   }
 
   return (
-    <div className="code-card">
+    <div className="code-card" tabIndex={0}>
       <div className="lang-chip">{(block.lang || "code").toLowerCase()}</div>
       <div className="floating-actions">
         <button className="icon-btn ghost" onClick={copy} title="Copy">
@@ -460,9 +510,37 @@ export default function App() {
   const [sources, setSources] = useState<AISourceInfo[]>([]);
   const [selProvider, setSelProvider] = useState<string>("openai");
   const [selModel, setSelModel] = useState<string>("gpt-4o-mini");
+  // ——— Editor pane state ———
+  const [editorTab, setEditorTab] = useState<"view" | "edit">("view");
+  const [showEditorConsole, setShowEditorConsole] = useState(false);
+  const [editorLogs, setEditorLogs] = useState<Array<{ level: "log"|"warn"|"error"; message: string }>>([]);
+  const webviewRef = useRef<any>(null); // Electron.WebviewTag; 'any' to avoid type friction
+
+  // Where to load in the Editor "View" tab:
+  const editorURL = (cfg?.EDITOR_URL as string) || "http://localhost:3000";
 
   // First-run walkthrough if a selected provider is missing keys
   const [showWalkthrough, setShowWalkthrough] = useState(false);
+  // --- Editor file state ---
+  const [edFile, setEdFile] = useState<{ rel: string; abs: string; fileURL?: string } | null>(null);
+  const [edText, setEdText] = useState<string>("");
+  const [edDirty, setEdDirty] = useState<boolean>(false);
+  const [edViewAvailable, setEdViewAvailable] = useState<boolean>(false);
+  const [edPreviewType, setEdPreviewType] = useState<"none" | "file" | "md">("none");
+  // Share the open buffer with the AI when sending
+  const [shareOpenFile, setShareOpenFile] = useState<boolean>(false);
+  // code editor refs
+  const edGutterRef = useRef<HTMLDivElement | null>(null);
+  const edTextRef = useRef<HTMLTextAreaElement | null>(null);
+  const [edLineCount, setEdLineCount] = useState<number>(1);
+  useEffect(() => {
+    setEdLineCount(Math.max(1, edText.split("\n").length));
+  }, [edText]);
+  const syncGutterScroll = () => {
+    if (edGutterRef.current && edTextRef.current) {
+      edGutterRef.current.scrollTop = edTextRef.current.scrollTop;
+    }
+  };
 
   async function openSourceModal() {
     const data = await bridge?.getAISources?.();
@@ -607,6 +685,86 @@ export default function App() {
       if (typeof off === "function") off();
     };
   }, [bridge]);
+  useEffect(() => {
+  const off = bridge?.onMenu?.(async (cmd: string) => {
+    if (cmd === "toggleEditorConsole") {
+      setShowEditorConsole((v) => !v);
+    } else if (cmd === "file:open") {
+      const res = await bridge?.openEditorFile?.();
+      if (res?.ok) {
+        setEdFile({ rel: res.rel, abs: res.abs, fileURL: res.fileURL });
+        setEdText(res.content);
+        setEdDirty(false);
+        if (res.previewable) {
+          // Decide preview type:
+          if (/\.(md|markdown)$/i.test(res.rel)) {
+            setEdPreviewType("md");
+          } else {
+            setEdPreviewType("file");
+          }
+          setEdViewAvailable(true);
+          setEditorTab("view");
+        } else {
+          setEdPreviewType("none");
+          setEdViewAvailable(false);
+          setEditorTab("edit");
+        }
+      }
+    } else if (cmd === "file:save") {
+      if (!edFile) return;
+      const ok = await bridge?.saveEditorFile?.(edFile.rel, edText);
+      if (ok?.ok) setEdDirty(false);
+    } else if (cmd === "file:saveAs") {
+      const res = await bridge?.saveEditorFileAs?.(edFile?.rel, edText);
+      if (res?.ok) {
+        setEdFile({ rel: res.rel, abs: res.abs, fileURL: res.fileURL });
+        setEdDirty(false);
+        if (res.previewable) {
+          if (/\.(md|markdown)$/i.test(res.rel)) setEdPreviewType("md");
+          else setEdPreviewType("file");
+          setEdViewAvailable(true);
+        } else {
+          setEdPreviewType("none");
+          setEdViewAvailable(false);
+        }
+      }
+    }
+  });
+  return () => { if (typeof off === "function") off(); };
+}, [bridge, edFile, edText]);
+
+
+  useEffect(() => {
+    const wv = webviewRef.current as any;
+    if (!wv) return;
+
+    // Collect console messages
+    const onConsole = (e: any) => {
+      const level: number = e.level; // 0=log, 1=warn, 2=error per Electron docs
+      const map: any = { 0: "log", 1: "warn", 2: "error" };
+      setEditorLogs((logs) => [
+        ...logs,
+        { level: map[level] || "log", message: String(e.message) },
+      ]);
+    };
+    const onCrashed = (_e: any) => {
+      setEditorLogs((logs) => [...logs, { level: "error", message: "Webview crashed" }]);
+    };
+    const onFailLoad = (_e: any) => {
+      setEditorLogs((logs) => [...logs, { level: "error", message: "Failed to load editor URL" }]);
+    };
+
+    wv.addEventListener("console-message", onConsole);
+    wv.addEventListener("crashed", onCrashed);
+    wv.addEventListener("did-fail-load", onFailLoad);
+    return () => {
+      try {
+        wv.removeEventListener("console-message", onConsole);
+        wv.removeEventListener("crashed", onCrashed);
+        wv.removeEventListener("did-fail-load", onFailLoad);
+      } catch {}
+    };
+  }, [editorTab, editorURL]);
 
   // Paste handler: turn pasted text into a jailed temp file + attachment
   const onPasteToAttach = useCallback(
@@ -712,19 +870,42 @@ export default function App() {
     setIsAsking(true);
     const myId = ++requestIdRef.current;
 
+    // Merge editor buffer if sharing is on (uses UNSAVED text so AI sees latest)
+    let allAtts = attachments;
+    if (shareOpenFile && (edText?.length || edFile)) {
+      const ext = (edFile?.rel?.split(".").pop() || "txt").toLowerCase();
+      const map: Record<string, string> = {
+        ts: "ts", tsx: "tsx", js: "js", jsx: "jsx", json: "json",
+        yml: "yaml", yaml: "yaml", html: "html", css: "css",
+        ps1: "powershell", sh: "bash", py: "python", md: "md", txt: ""
+      };
+      const lang = map[ext] || "";
+      const name = edFile?.rel || "untitled.txt";
+      const virt: Attachment = {
+        name,
+        displayPath: name,
+        size: edText.length,
+        truncated: false,
+        content: edText,
+        lang
+      };
+      allAtts = [...attachments, virt];
+    }
+
     // Echo to chat (prompt + filenames/sizes)
-    const filesLine = attachments.length ? " • " + attachments.map((a) => `${a.name} (${fmtBytes(a.size)})`).join(", ") : "";
+    const filesLine = allAtts.length ? " • " + allAtts.map((a) => `${a.name} (${fmtBytes(a.size)})`).join(", ") : "";
     setChat((c) => [...c, { from: "user", text: (q || "(no prompt)") + filesLine, ts: Date.now() }]);
 
     // Build the model prompt with file contents
     let prompt = q || "(no prompt)";
-    if (attachments.length) {
-      const parts = attachments.map((att) => {
+    if (allAtts.length) {
+      const parts = allAtts.map((att) => {
         const header = `Attached ${att.displayPath} (${att.size} bytes)` + (att.truncated ? " [truncated]" : "");
         return `${header}\n\n\`\`\`${att.lang}\n${att.content}\n\`\`\``;
       });
       prompt += `\n\n---\n${parts.join("\n\n---\n")}`;
     }
+
     setInput("");
     setAttachments([]);
 
@@ -966,145 +1147,181 @@ export default function App() {
     >
 
       {/* Header with Summarize + Settings */}
-      <div
-        className="header"
-        style={{
-          position: "sticky",
-          top: 0,
-          zIndex: 6,
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          flexWrap: "nowrap",
-          paddingTop: 8,
-          paddingBottom: 8,
-          borderBottom: "1px solid var(--border)",
-          background: "rgba(5,8,16,0.8)",
-          backdropFilter: "blur(3px)",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 10, fontWeight: 600 }}>
-          Kage 2.0
-          {!!cfg && (
-            <React.Fragment>
-              <ProviderBadge provider={cfg.PROVIDER || "openai"} onClick={openSourceModal} />
-              <ModelBadge model={cfg.MODEL || "gpt-4o-mini"} onClick={openSourceModal} />
-            </React.Fragment>
-          )}
-        </div>
-
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-          {/* Summarize button removed (now in menu) */}
-          <button className="icon-btn" onClick={openSettings} title="Settings">
-            <IconGear />
-          </button>
-        </div>
-      </div>
-
-      {/* Chat */}
-      <div
-        className="chat"
-        ref={chatRef}
-        onScroll={handleChatScroll}
-        style={{
-          flex: "1 1 auto",
-          overflowY: "auto",
-          overscrollBehavior: "contain",
-          scrollbarGutter: "stable both-edges",
-        }}
-      >
-        {chat.length === 0 && (
-          <div style={{ color: "#9ca3af" }}>
-            Type a prompt, attach files (paperclip or paste), then hit Send. Open <b>Settings</b> (gear) to change the working directory
-            and auto-exec.
-          </div>
+      <div className="main-split">
+  {/* ─────────── LEFT: AI pane ─────────── */}
+  <section className="ai-pane">
+    {/* Header now sits OUTSIDE the scroller (top row of the grid) */}
+    <div className="header">
+      <div style={{ display: "flex", alignItems: "center", gap: 10, fontWeight: 600 }}>
+        Kage 2.0
+        {!!cfg && (
+          <React.Fragment>
+            <ProviderBadge provider={cfg.PROVIDER || "openai"} onClick={openSourceModal} />
+            <ModelBadge model={cfg.MODEL || "gpt-4o-mini"} onClick={openSourceModal} />
+          </React.Fragment>
         )}
-        {chat.map(renderMessage)}
       </div>
-
-      {/* Input row */}
-      <div
-        className="row"
-        style={{
-          flexWrap: "nowrap",
-          position: "sticky",
-          bottom: 0,
-          background: "rgba(5,8,16,0.8)",
-          backdropFilter: "blur(3px)",
-          borderTop: "1px solid var(--border)",
-          paddingTop: 8,
-          paddingBottom: 8,
-          zIndex: 5,
-        }}
-      >
-
-        <button className="icon-btn" onClick={importFile} title="Attach file">
-          <IconPaperclip />
+      <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+        <button className="icon-btn" onClick={openSettings} title="Settings">
+          <IconGear />
         </button>
+      </div>
+    </div>
 
-        {/* attached chips */}
-        {attachments.length > 0 && (
-          <div style={{ display: "flex", gap: 8, alignItems: "center", marginLeft: 8 }}>
-            {attachments.map((a, idx) => (
-              <span key={idx} className="badge" style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
-                {a.name} {a.truncated ? "(truncated)" : ""}
-                <button
-                  className="icon-btn"
-                  style={{ width: 22, height: 22, borderRadius: 6 }}
-                  onClick={() => setAttachments((x) => x.filter((_, i) => i !== idx))}
-                  title="Remove"
-                >
-                  <IconX />
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
+    {/* Middle row = the ONLY scroller */}
+    <div
+      className="ai-scroll"
+      ref={chatRef}
+      onScroll={handleChatScroll}
+    >
+      <div className="chat">
+        {chat.map((m, i) => renderMessage(m, i))}
+      </div>
+    </div>
 
-        <div
-          className="input-wrap"
-          style={{
-            marginLeft: 8,
-            display: "grid",
-            gridTemplateColumns: "1fr 36px", // input | fixed button slot
-            alignItems: "center",
-            gap: 8,
-            minWidth: 0,                     // allow shrinking instead of wrapping
+    {/* Bottom row = input bar (not sticky now; just pinned by the grid) */}
+    <div className="row">
+      <button className="icon-btn" onClick={importFile} title="Attach file">
+        <IconPaperclip />
+      </button>
+
+      <div
+        className="input-wrap"
+        style={{
+          marginLeft: 8,
+          display: "grid",
+          gridTemplateColumns: "1fr 36px",
+          alignItems: "center",
+          gap: 8,
+          minWidth: 0,
+        }}
+      >
+        <input
+          type="text"
+          placeholder="Ask the model… (paste to attach)"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if ((cfg?.SEND_ON_ENTER ?? true) && e.key === "Enter") send();
           }}
-        >
-          <input
-            type="text"
-            placeholder="Ask the model… (paste to attach)"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if ((cfg?.SEND_ON_ENTER ?? true) && e.key === "Enter") send();
-            }}
-            onPaste={onPasteToAttach}
-            style={{ minWidth: 0 }}          // prevent overflow pushing the button down
-          />
+          onPaste={onPasteToAttach}
+          style={{ minWidth: 0 }}
+        />
+        {!isAsking ? (
+          <button className="icon-btn send-btn primary" onClick={send} title="Send" style={{ width: 32, height: 32 }}>
+            <IconSend />
+          </button>
+        ) : (
+          <button className="icon-btn danger" onClick={cancelAsk} title="Stop" style={{ width: 32, height: 32 }}>
+            <IconStop />
+          </button>
+        )}
+      </div>
+    </div>
+  </section>
 
-          {!isAsking ? (
-            <button
-              className="icon-btn send-btn primary"
-              onClick={send}
-              title="Send"
-              style={{ width: 32, height: 32 }} // fixed, matches Stop
-            >
-              <IconSend />
-            </button>
-          ) : (
-            <button
-              className="icon-btn danger"
-              onClick={cancelAsk}
-              title="Stop"
-              style={{ width: 32, height: 32 }} // fixed, matches Send
-            >
-              <IconStop />
-            </button>
-          )}
+
+  {/* Divider */}
+  <div className="split-divider" />
+
+  {/* ─────────── RIGHT: Editor pane ─────────── */}
+<section className="editor-pane">
+  <div className="editor-header">
+    <div className="editor-tabs">
+      <button
+        className={`${editorTab === "view" ? "active" : ""} ${!edViewAvailable ? "disabled" : ""}`}
+        onClick={() => edViewAvailable && setEditorTab("view")}
+        title={edViewAvailable ? "Preview file" : "No preview available for this file type"}
+      >
+        View
+      </button>
+      <button
+        className={editorTab === "edit" ? "active" : ""}
+        onClick={() => setEditorTab("edit")}
+        title="Edit file"
+      >
+        Edit
+      </button>
+    </div>
+
+    <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
+      <label className="mono" title="Include the open buffer as an attachment when sending to AI" style={{ display: "inline-flex", alignItems: "center", gap: 6, opacity: 0.9 }}>
+        <input
+          type="checkbox"
+          checked={shareOpenFile}
+          onChange={(e) => setShareOpenFile(e.target.checked)}
+          style={{ accentColor: "var(--accent)" }}
+        />
+        Share with AI
+      </label>
+      <div style={{ fontSize: 12, opacity: 0.8 }} className="mono">
+        {edFile?.rel || editorURL}{edDirty ? " • UNSAVED" : ""}
+      </div>
+    </div>
+
+  </div>
+
+  <div className="editor-body">
+    {editorTab === "view" ? (
+      edPreviewType === "md" ? (
+        <div className="editor-view" style={{ overflow: "auto", padding: 0 }}>
+          <div
+            dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(marked.parse(edText) as string) }}
+          />
+        </div>
+      ) : (
+        <div className="editor-view">
+          <webview
+            ref={webviewRef}
+            className="editor-webview"
+            src={edFile?.fileURL || editorURL}
+            allowpopups="true"
+          />
+        </div>
+      )
+    ) : (
+      <div className="editor-view">
+        <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+          <CodeMirror
+            value={edText}
+           
+            theme={[oneDark, cmTheme]}
+            extensions={[
+              lineNumbers(),
+              highlightActiveLineGutter(),
+              history(),
+              highlightActiveLine(),
+              highlightSelectionMatches(),
+              keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap]),
+              cmLangForFilename(edFile?.rel),
+            ]}
+            onChange={(val) => { setEdText(val); setEdDirty(true); }}
+            basicSetup={false}
+          />
         </div>
       </div>
+
+    )}
+
+    {showEditorConsole && (
+      <div className="editor-console">
+        {editorLogs.length === 0 ? (
+          <div className="log" style={{ opacity: 0.7 }}>Console is empty.</div>
+        ) : (
+          editorLogs.map((l, i) => (
+            <div key={i} className={`log ${l.level}`}>
+              [{l.level.toUpperCase()}] {l.message}
+            </div>
+          ))
+        )}
+      </div>
+    )}
+  </div>
+</section>
+
+
+</div>
+
 
       {/* Approval modal */}
       {pending && (
@@ -1156,7 +1373,20 @@ export default function App() {
                   </button>
                 </div>
               </div>
-
+              <div className="field-row" style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 10, alignItems: "center" }}>
+                <label style={{ color: "var(--sub)" }}>Editor URL</label>
+                <input
+                  type="text"
+                  value={cfg?.EDITOR_URL || "http://localhost:3000"}
+                  onChange={(e) => setCfg((c) => c ? { ...c, EDITOR_URL: e.target.value } : c)}
+                  onBlur={async (e) => {
+                    const next = { ...(cfg as any), EDITOR_URL: e.target.value };
+                    const res = await bridge!.updateConfig?.(next);
+                    if (res?.ok) setCfg(res.config);
+                  }}
+                  placeholder="http://localhost:3000"
+                />
+              </div>
               <div className="field-row" style={{ display: "grid", gridTemplateColumns: "160px 1fr auto", gap: 10, alignItems: "center" }}>
                 <label style={{ color: "var(--sub)" }}>AI Source/Model</label>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
