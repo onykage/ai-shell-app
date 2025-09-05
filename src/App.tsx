@@ -349,6 +349,51 @@ function IconStop() {
     </svg>
   );
 }
+function IconEye({ dimmed = false }: { dimmed?: boolean }) {
+  return (
+    <svg width="21" height="21" viewBox="0 0 24 24" fill="none">
+      <ellipse
+        cx="12" cy="12"
+        rx="9" ry="6"
+        stroke={dimmed ? "#787878" : "currentColor"}
+        strokeWidth="1.5"
+        fill="none"
+      />
+      <circle
+        cx="12" cy="12"
+        r="2.6"
+        fill={dimmed ? "#787878" : "currentColor"}
+        opacity={dimmed ? 0.35 : 1}
+      />
+    </svg>
+  );
+}
+
+function IconEyeOff() {
+  // Dimmed eye with a line through it
+  return (
+    <svg width="21" height="21" viewBox="0 0 24 24" fill="none">
+      {/* Eye shape */}
+      <ellipse
+        cx="12" cy="12"
+        rx="9" ry="6"
+        stroke="#787878"
+        strokeWidth="1.5"
+        fill="none"
+        opacity={0.55}
+      />
+      {/* Pupil */}
+      <circle
+        cx="12" cy="12"
+        r="2.7"
+        fill="#787878"
+        opacity={0.26}
+      />
+      {/* Strike-through line */}
+      <line x1="5" y1="19" x2="19" y2="5" stroke="#ba2626" strokeWidth="2" />
+    </svg>
+  );
+}
 
 function textColorOn(bg: string) {
   // simple luminance check for black/white text
@@ -1245,15 +1290,16 @@ export default function App() {
     </div>
 
     <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
-      <label className="mono" title="Include the open buffer as an attachment when sending to AI" style={{ display: "inline-flex", alignItems: "center", gap: 6, opacity: 0.9 }}>
-        <input
-          type="checkbox"
-          checked={shareOpenFile}
-          onChange={(e) => setShareOpenFile(e.target.checked)}
-          style={{ accentColor: "var(--accent)" }}
-        />
-        Share with AI
-      </label>
+      <button
+        className="icon-btn"
+        style={{ marginRight: 2, background: "none" }}
+        aria-label={shareOpenFile ? "AI can see the buffer" : "AI cannot see the buffer"}
+        title={shareOpenFile ? "AI can see the text (click to hide)" : "AI cannot see (click to let AI see this file when asking)"}
+        onClick={() => setShareOpenFile(v => !v)}
+      >
+        {shareOpenFile ? <IconEye /> : <IconEyeOff />}
+      </button>
+
       <div style={{ fontSize: 12, opacity: 0.8 }} className="mono">
         {edFile?.rel || editorURL}{edDirty ? " • UNSAVED" : ""}
       </div>
