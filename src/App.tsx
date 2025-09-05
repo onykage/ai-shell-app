@@ -1210,6 +1210,15 @@ export default function App() {
         <button className="icon-btn" onClick={openSettings} title="Settings">
           <IconGear />
         </button>
+        <button
+        className="icon-btn"
+        style={{ marginRight: 2, background: "none" }}
+        aria-label={shareOpenFile ? "AI can see the buffer" : "AI cannot see the buffer"}
+        title={shareOpenFile ? "AI can see the text (click to hide)" : "AI cannot see (click to let AI see this file when asking)"}
+        onClick={() => setShareOpenFile(v => !v)}
+      >
+        {shareOpenFile ? <IconEye /> : <IconEyeOff />}
+      </button>
       </div>
     </div>
 
@@ -1290,15 +1299,7 @@ export default function App() {
     </div>
 
     <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
-      <button
-        className="icon-btn"
-        style={{ marginRight: 2, background: "none" }}
-        aria-label={shareOpenFile ? "AI can see the buffer" : "AI cannot see the buffer"}
-        title={shareOpenFile ? "AI can see the text (click to hide)" : "AI cannot see (click to let AI see this file when asking)"}
-        onClick={() => setShareOpenFile(v => !v)}
-      >
-        {shareOpenFile ? <IconEye /> : <IconEyeOff />}
-      </button>
+      
 
       <div style={{ fontSize: 12, opacity: 0.8 }} className="mono">
         {edFile?.rel || editorURL}{edDirty ? " • UNSAVED" : ""}
