@@ -11,7 +11,36 @@ import { promisify } from "node:util";
 import * as dotenv from "dotenv";
 import { getRootDir, setRootDir, jailedPath } from "./jail";
 
+
+function getAppIconPath(): string | undefined {
+  const candidates = [
+    path.join(app.getAppPath(), "public", "assets", "icon-256.png"),
+    path.join(process.cwd(), "public", "assets", "icon-256.png"),
+    path.join(__dirname, "../public/assets/icon-256.png"),
+    path.join(__dirname, "../../public/assets/icon-256.png"),
+  ];
+  for (const p of candidates) {
+     try { if (fs.existsSync(p)) return p; } catch {}
+  }
+  return undefined;
+}
+
 const exec = promisify(cpExec);
+
+
+function migrateConfig() {
+  try {
+    const p = configPath();
+    if (fs.existsSync(p)) {
+      const raw = fs.readFileSync(p, "utf8");
+      const parsed = JSON.parse(raw);
+      if (!("UI_MODE" in parsed) || parsed.UI_MODE === "split") {
+        // Default to AI Only for first-time/legacy configs
+        fs.writeFileSync(p, JSON.stringify({ ...parsed, UI_MODE: "aiOnly" }, null, 2), "utf8");
+      }
+    }
+  } catch {}
+}
 
 // ─────────────────────────────────────────────────────────────
 // Load env for MAIN (so OPENAI_API_KEY is available here)
@@ -38,6 +67,7 @@ type AppConfig = {
   PROVIDER: string;
   MODEL: string;
   SEND_ON_ENTER?: boolean; // future setting
+  UI_MODE?: "split" | "aiOnly" | "editorOnly";
 };
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -45,6 +75,7 @@ const DEFAULT_CONFIG: AppConfig = {
   AUTO_EXEC: true,
   PROVIDER: "openai",
   MODEL: "gpt-4o-mini",
+  UI_MODE: "aiOnly",
 };
 
 function configPath() {
@@ -88,9 +119,10 @@ async function createWindow() {
   await ensureJail();
 
   mainWindow = new BrowserWindow({
-    width: 1120,
+width: 1120,
     height: 780,
     title: "Kage 2.0",
+    icon: getAppIconPath(),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -178,11 +210,19 @@ function createAppMenu() {
   ];
 
   const viewSubmenu: Electron.MenuItemConstructorOptions[] = [
-    { role: "reload" as const },
-    { role: "toggleDevTools" as const },
-    { type: "separator" as const },
-    { role: "togglefullscreen" as const },
-  ];
+  { role: "reload" as const },
+  { role: "toggleDevTools" as const },
+  { type: "separator" as const },
+  { role: "togglefullscreen" as const },
+  { type: "separator" as const },
+  { label: "AI Only", accelerator: "CmdOrCtrl+1", click: () => mainWindow?.webContents.send("menu:cmd", "ui:aiOnly") },
+  { label: "Split View", accelerator: "CmdOrCtrl+2", click: () => mainWindow?.webContents.send("menu:cmd", "ui:split") },
+  { label: "Editor Only", accelerator: "CmdOrCtrl+3", click: () => mainWindow?.webContents.send("menu:cmd", "ui:editorOnly") },
+];
+
+
+
+
 
   const helpSubmenu: Electron.MenuItemConstructorOptions[] = [
     {
@@ -202,6 +242,7 @@ function createAppMenu() {
     { label: "File", submenu: fileSubmenu },
     { label: "AI", submenu: aiSubmenu },
     { label: "View", submenu: viewSubmenu },
+    
     { label: "Help", submenu: helpSubmenu },
   ];
 
@@ -568,6 +609,7 @@ app.on("window-all-closed", () => {
 });
 
 app.whenReady().then(async () => {
+  migrateConfig(); 
   registerIpc();
   await createWindow();
   createAppMenu();

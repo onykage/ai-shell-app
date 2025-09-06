@@ -12,6 +12,7 @@
   --sub: #9aa3b2;
   --accent: #10a37f;
   --danger: #ef4444;
+  --panel-gutter: #172042;
 }
 
 /* ---------- Base ---------- */
@@ -459,3 +460,19 @@ body {
 
 /* Safety: if any ancestor grid/flex blocks shrink, allow children to scroll */
 .editor-pane, .editor-content, .pane-body, .tab-content { min-height: 0; }
+
+* {
+  scrollbar-width: thin;                 /* Firefox */
+  scrollbar-color: #3a3a3a transparent;  /* Firefox */
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #3a3a3a;
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}

@@ -11,7 +11,37 @@ const node_child_process_2 = require("node:child_process");
 const node_util_1 = require("node:util");
 const dotenv = require("dotenv");
 const jail_1 = require("./jail");
+function getAppIconPath() {
+    const candidates = [
+        path.join(electron_1.app.getAppPath(), "public", "assets", "icon-256.png"),
+        path.join(process.cwd(), "public", "assets", "icon-256.png"),
+        path.join(__dirname, "../public/assets/icon-256.png"),
+        path.join(__dirname, "../../public/assets/icon-256.png"),
+    ];
+    for (const p of candidates) {
+        try {
+            if (fs.existsSync(p))
+                return p;
+        }
+        catch { }
+    }
+    return undefined;
+}
 const exec = (0, node_util_1.promisify)(node_child_process_2.exec);
+function migrateConfig() {
+    try {
+        const p = configPath();
+        if (fs.existsSync(p)) {
+            const raw = fs.readFileSync(p, "utf8");
+            const parsed = JSON.parse(raw);
+            if (!("UI_MODE" in parsed) || parsed.UI_MODE === "split") {
+                // Default to AI Only for first-time/legacy configs
+                fs.writeFileSync(p, JSON.stringify({ ...parsed, UI_MODE: "aiOnly" }, null, 2), "utf8");
+            }
+        }
+    }
+    catch { }
+}
 // ─────────────────────────────────────────────────────────────
 // Load env for MAIN (so OPENAI_API_KEY is available here)
 // ─────────────────────────────────────────────────────────────
@@ -34,6 +64,7 @@ const DEFAULT_CONFIG = {
     AUTO_EXEC: true,
     PROVIDER: "openai",
     MODEL: "gpt-4o-mini",
+    UI_MODE: "aiOnly",
 };
 function configPath() {
     return path.join(electron_1.app.getPath("userData"), "config.json");
@@ -74,6 +105,7 @@ async function createWindow() {
         width: 1120,
         height: 780,
         title: "Kage 2.0",
+        icon: getAppIconPath(),
         webPreferences: {
             preload: path.join(__dirname, "preload.js"),
             contextIsolation: true,
@@ -158,6 +190,10 @@ function createAppMenu() {
         { role: "toggleDevTools" },
         { type: "separator" },
         { role: "togglefullscreen" },
+        { type: "separator" },
+        { label: "AI Only", accelerator: "CmdOrCtrl+1", click: () => mainWindow?.webContents.send("menu:cmd", "ui:aiOnly") },
+        { label: "Split View", accelerator: "CmdOrCtrl+2", click: () => mainWindow?.webContents.send("menu:cmd", "ui:split") },
+        { label: "Editor Only", accelerator: "CmdOrCtrl+3", click: () => mainWindow?.webContents.send("menu:cmd", "ui:editorOnly") },
     ];
     const helpSubmenu = [
         {
@@ -502,6 +538,7 @@ electron_1.app.on("window-all-closed", () => {
         electron_1.app.quit();
 });
 electron_1.app.whenReady().then(async () => {
+    migrateConfig();
     registerIpc();
     await createWindow();
     createAppMenu();

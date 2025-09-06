@@ -79,6 +79,7 @@ type AppConfig = {
   MODEL: string;
   // TODO(settings): when false, Enter won't send; only the button will.
   SEND_ON_ENTER?: boolean;
+  UI_MODE?: "split" | "aiOnly" | "editorOnly";
 };
 
 /* ---------------------- Markdown / Highlight ---------------------- */
@@ -549,6 +550,29 @@ export default function App() {
   // Settings modal
   const [showSettings, setShowSettings] = useState(false);
   const [cfg, setCfg] = useState<AppConfig | null>(null);
+  type ViewMode = "split" | "aiOnly" | "editorOnly";
+const [viewMode, setViewMode] = useState<ViewMode>("aiOnly");
+  // Back-compat: if legacy code references paneMode, alias to viewMode
+  const paneMode: ViewMode = viewMode;
+
+  const containerStyle = useMemo<React.CSSProperties>(() => {
+        // In split mode, don't override any layout the app already has.
+        if (viewMode === "split") return {};
+        // For single-pane modes, keep it simple and full-width.
+        return { display: "grid", gridTemplateColumns: "1fr", height: "100%" };
+      }, [viewMode]);
+
+const aiPaneStyle = useMemo<React.CSSProperties>(() => {
+        return viewMode === "editorOnly" ? { display: "none" } : {};
+      }, [viewMode]);
+
+const editorPaneStyle = useMemo<React.CSSProperties>(() => {
+        return viewMode === "aiOnly" ? { display: "none" } : {};
+      }, [viewMode]);
+
+const dividerStyle = useMemo<React.CSSProperties>(() => {
+        return viewMode === "split" ? {} : { display: "none" };
+      }, [viewMode]);
     // Source/Model switching
   type AISourceInfo = { id: "openai" | "chatly" | "v0"; label: string; envVar: string; hasKey: boolean; supported: boolean; models: string[] };
   const [showSourceModal, setShowSourceModal] = useState(false);
@@ -689,8 +713,8 @@ export default function App() {
         const c = await bridge?.getConfig?.();
         if (c?.ok) {
           if (mounted) {
-            setCfg(c.config);
-            setAutoExec(c.config.AUTO_EXEC);
+            
+            setViewMode((c.config as any).UI_MODE ?? "aiOnly");
             if (c.root && c.root !== rt) setRoot(c.root);
           }
         }
@@ -903,6 +927,20 @@ export default function App() {
       },
     ]);
   }, [bridge]);
+  useEffect(() => {
+  const off = bridge?.onMenu?.(async (cmd: string) => {
+    if (!cmd?.startsWith("ui:")) return;
+    const next =
+      cmd === "ui:aiOnly" ? "aiOnly" :
+      cmd === "ui:editorOnly" ? "editorOnly" :
+      "split" as ViewMode;
+    setViewMode(next);
+    // persist to config
+    try { await bridge?.updateConfig?.({ UI_MODE: next } as any); } catch {}
+  });
+  return () => { if (typeof off === "function") off(); };
+}, [bridge]);
+  
 
   // send with thinking placeholder + graceful reveal
   async function send() {
@@ -1192,9 +1230,9 @@ export default function App() {
     >
 
       {/* Header with Summarize + Settings */}
-      <div className="main-split">
+      <div className="main-split" style={containerStyle}>
   {/* ─────────── LEFT: AI pane ─────────── */}
-  <section className="ai-pane">
+  <section className="ai-pane" style={aiPaneStyle}>
     {/* Header now sits OUTSIDE the scroller (top row of the grid) */}
     <div className="header">
       <div style={{ display: "flex", alignItems: "center", gap: 10, fontWeight: 600 }}>
@@ -1276,26 +1314,12 @@ export default function App() {
 
 
   {/* Divider */}
-  <div className="split-divider" />
+  <div className="split-divider" style={dividerStyle} />
 
   {/* ─────────── RIGHT: Editor pane ─────────── */}
-<section className="editor-pane">
+<section className="editor-pane" style={editorPaneStyle}>
   <div className="editor-header">
     <div className="editor-tabs">
-      <button
-        className={`${editorTab === "view" ? "active" : ""} ${!edViewAvailable ? "disabled" : ""}`}
-        onClick={() => edViewAvailable && setEditorTab("view")}
-        title={edViewAvailable ? "Preview file" : "No preview available for this file type"}
-      >
-        View
-      </button>
-      <button
-        className={editorTab === "edit" ? "active" : ""}
-        onClick={() => setEditorTab("edit")}
-        title="Edit file"
-      >
-        Edit
-      </button>
     </div>
 
     <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
