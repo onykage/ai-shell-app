@@ -166,18 +166,11 @@ function createAppMenu() {
   ];
 
   const fileSubmenu: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: "Settings",
-      accelerator: "CmdOrCtrl+,",
-      click: () => mainWindow?.webContents.send("menu:cmd", "openSettings"),
-    },
-    { label: "Toggle Editor Console",
-      accelerator: "CmdOrCtrl+Shift+K",
-      click: () => mainWindow?.webContents.send("menu:cmd", "toggleEditorConsole"),
-    },
     { label: "Open…", accelerator: "CmdOrCtrl+O", click: () => mainWindow?.webContents.send("menu:cmd", "file:open") },
     { label: "Save", accelerator: "CmdOrCtrl+S", click: () => mainWindow?.webContents.send("menu:cmd", "file:save") },
     { label: "Save As…", accelerator: "CmdOrCtrl+Shift+S", click: () => mainWindow?.webContents.send("menu:cmd", "file:saveAs") },
+    { type: "separator" as const },
+    { label: "Execute Command…", accelerator: "CmdOrCtrl+E", click: () => mainWindow?.webContents.send("menu:cmd", "file:exec") },
     {
       label: "Select Working Directory…",
       click: async () => {
@@ -192,6 +185,11 @@ function createAppMenu() {
       },
     },
     { type: "separator" as const },
+    {
+      label: "Settings",
+      accelerator: "CmdOrCtrl+,",
+      click: () => mainWindow?.webContents.send("menu:cmd", "openSettings"),
+    },
     isMac ? ({ role: "close" as const } as Electron.MenuItemConstructorOptions)
          : ({ role: "quit"  as const } as Electron.MenuItemConstructorOptions),
   ];
@@ -212,8 +210,10 @@ function createAppMenu() {
   const viewSubmenu: Electron.MenuItemConstructorOptions[] = [
   { role: "reload" as const },
   { role: "toggleDevTools" as const },
+  { label: "Toggle Editor Console", accelerator: "CmdOrCtrl+Shift+K", click: () => mainWindow?.webContents.send("menu:cmd", "toggleEditorConsole") },
   { type: "separator" as const },
   { role: "togglefullscreen" as const },
+
   { type: "separator" as const },
   { label: "AI Only", accelerator: "CmdOrCtrl+1", click: () => mainWindow?.webContents.send("menu:cmd", "ui:aiOnly") },
   { label: "Split View", accelerator: "CmdOrCtrl+2", click: () => mainWindow?.webContents.send("menu:cmd", "ui:split") },

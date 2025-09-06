@@ -162,7 +162,7 @@ function cmLangForFilename(name?: string) {
 
 const cmTheme = EditorView.theme({
   "&": { backgroundColor: "var(--panel)", color: "var(--text)", height: "100%" },
-  ".cm-gutters": { backgroundColor: "var(--panel)", color: "var(--sub)", borderRight: "1px solid var(--border)" },
+  ".cm-gutters": { backgroundColor: "rgba(0,0,0,0.35)", color: "var(--sub)", borderRight: "1px solid var(--border)" },
   ".cm-activeLine": { backgroundColor: "rgba(255,255,255,0.04)" },
 });
 
@@ -727,6 +727,18 @@ const dividerStyle = useMemo<React.CSSProperties>(() => {
     };
   }, [bridge]);
 
+
+useEffect(() => {
+  const onBeforeUnload = (e: BeforeUnloadEvent) => {
+    if (edDirty) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+  };
+  window.addEventListener("beforeunload", onBeforeUnload);
+  return () => window.removeEventListener("beforeunload", onBeforeUnload);
+}, [edDirty]);
+
   // exec pending event (optional)
   useEffect(() => {
     const off = bridge?.onExecPending?.((req) => setPending(req));
@@ -734,6 +746,18 @@ const dividerStyle = useMemo<React.CSSProperties>(() => {
       if (off) off();
     };
   }, [bridge]);
+
+
+useEffect(() => {
+  const onBeforeUnload = (e: BeforeUnloadEvent) => {
+    if (edDirty) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+  };
+  window.addEventListener("beforeunload", onBeforeUnload);
+  return () => window.removeEventListener("beforeunload", onBeforeUnload);
+}, [edDirty]);
 
   useEffect(() => {
     const off = bridge?.onMenu?.((cmd) => {
@@ -779,11 +803,29 @@ const dividerStyle = useMemo<React.CSSProperties>(() => {
           setEditorTab("edit");
         }
       }
-    } else if (cmd === "file:save") {
+    
+
+// If currently AI-only, switch to split on open
+if (viewMode === "aiOnly") {
+  setViewMode("split");
+  try { await bridge?.updateConfig?.({ UI_MODE: "split" } as any); } catch {}
+}
+} else if (cmd === "file:save") {
       if (!edFile) return;
       const ok = await bridge?.saveEditorFile?.(edFile.rel, edText);
       if (ok?.ok) setEdDirty(false);
-    } else if (cmd === "file:saveAs") {
+    
+} else if (cmd === "file:exec") {
+  const userCmd = window.prompt("Enter a shell command to run in the Working Directory:");
+  if (userCmd && bridge?.requestExec) {
+    try {
+      await bridge.requestExec({ id: crypto.randomUUID(), command: userCmd, cwd: root || "." });
+    } catch (err) {
+      setChat((c) => [...c, { from: "system", text: "Exec error: " + (err?.message ?? String(err)), ts: Date.now() }]);
+    }
+  }
+
+} else if (cmd === "file:saveAs") {
       const res = await bridge?.saveEditorFileAs?.(edFile?.rel, edText);
       if (res?.ok) {
         setEdFile({ rel: res.rel, abs: res.abs, fileURL: res.fileURL });
@@ -888,6 +930,18 @@ const dividerStyle = useMemo<React.CSSProperties>(() => {
     [bridge]
   );
 
+
+useEffect(() => {
+  const onBeforeUnload = (e: BeforeUnloadEvent) => {
+    if (edDirty) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+  };
+  window.addEventListener("beforeunload", onBeforeUnload);
+  return () => window.removeEventListener("beforeunload", onBeforeUnload);
+}, [edDirty]);
+
   // Import file (attach only)
   const importFile = useCallback(async () => {
     if (!bridge?.pickFile) {
@@ -941,6 +995,18 @@ const dividerStyle = useMemo<React.CSSProperties>(() => {
   return () => { if (typeof off === "function") off(); };
 }, [bridge]);
   
+
+
+useEffect(() => {
+  const onBeforeUnload = (e: BeforeUnloadEvent) => {
+    if (edDirty) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+  };
+  window.addEventListener("beforeunload", onBeforeUnload);
+  return () => window.removeEventListener("beforeunload", onBeforeUnload);
+}, [edDirty]);
 
   // send with thinking placeholder + graceful reveal
   async function send() {
@@ -1086,7 +1152,33 @@ const dividerStyle = useMemo<React.CSSProperties>(() => {
     const b = blocks[0];
     const ext = langToExt(b.lang);
     if (!ext || ext === "txt") return;
-    const rel = `temp/ai-snippet-${Date.now()}.${ext}`;
+    const rel = `temp/ai-snippet-${Date.now()}
+
+// Ask to save/discard when buffer has unsaved changes
+async function confirmBeforeDiscard(): Promise<boolean> {
+  if (!edDirty) return true;
+  const choice = window.confirm("You have unsaved changes. Save them now? Click OK to Save, Cancel to discard.");
+  if (choice) {
+    if (edFile) {
+      const ok = await bridge?.saveEditorFile?.(edFile.rel, edText);
+      if (ok?.ok) setEdDirty(false);
+      return true;
+    } else {
+      const res = await bridge?.saveEditorFileAs?.(undefined, edText);
+      if (res?.ok) {
+        setEdFile({ rel: res.rel, abs: res.abs, fileURL: res.fileURL });
+        setEdDirty(false);
+        return true;
+      }
+      return false;
+    }
+  } else {
+    // discard
+    setEdDirty(false);
+    return true;
+  }
+}
+.${ext}`;
     try {
       await bridge!.writeFile(rel, b.code);
       const cmd = execCmdFor(ext, rel);
