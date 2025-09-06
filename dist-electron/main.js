@@ -194,6 +194,9 @@ function createAppMenu() {
         { label: "AI Only", accelerator: "CmdOrCtrl+1", click: () => mainWindow?.webContents.send("menu:cmd", "ui:aiOnly") },
         { label: "Split View", accelerator: "CmdOrCtrl+2", click: () => mainWindow?.webContents.send("menu:cmd", "ui:split") },
         { label: "Editor Only", accelerator: "CmdOrCtrl+3", click: () => mainWindow?.webContents.send("menu:cmd", "ui:editorOnly") },
+        { label: "Viewer Only", accelerator: "CmdOrCtrl+4", click: () => mainWindow?.webContents.send("menu:cmd", "ui:viewerOnly") },
+        { label: "Editor ∥ Viewer", accelerator: "CmdOrCtrl+5", click: () => mainWindow?.webContents.send("menu:cmd", "ui:editorViewer") },
+        { label: "AI ∥ Viewer", accelerator: "CmdOrCtrl+6", click: () => mainWindow?.webContents.send("menu:cmd", "ui:aiViewer") },
     ];
     const helpSubmenu = [
         {

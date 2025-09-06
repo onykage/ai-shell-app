@@ -552,7 +552,6 @@ export default function App() {
   const [cfg, setCfg] = useState<AppConfig | null>(null);
   type ViewMode = "split" | "aiOnly" | "editorOnly";
 const [viewMode, setViewMode] = useState<ViewMode>("aiOnly");
-  const bootingRef = useRef(true);
   // Back-compat: if legacy code references paneMode, alias to viewMode
   const paneMode: ViewMode = viewMode;
 
@@ -574,6 +573,12 @@ const editorPaneStyle = useMemo<React.CSSProperties>(() => {
 const dividerStyle = useMemo<React.CSSProperties>(() => {
         return viewMode === "split" ? {} : { display: "none" };
       }, [viewMode]);
+
+const viewerPaneStyle = useMemo<React.CSSProperties>(() => {
+  const show = viewMode === "viewerOnly" || viewMode === "editorViewer" || viewMode === "aiViewer";
+  return show ? {} : { display: "none" };
+}, [viewMode]);
+
     // Source/Model switching
   type AISourceInfo = { id: "openai" | "chatly" | "v0"; label: string; envVar: string; hasKey: boolean; supported: boolean; models: string[] };
   const [showSourceModal, setShowSourceModal] = useState(false);
@@ -588,6 +593,24 @@ const dividerStyle = useMemo<React.CSSProperties>(() => {
 
   // Where to load in the Editor "View" tab:
   const editorURL = (cfg?.EDITOR_URL as string) || "http://localhost:3000";
+
+// ——— Viewer pane state ———
+const viewerRef = useRef<any>(null);
+const [viewerFit, setViewerFit] = useState(true);
+
+const popOutViewer = useCallback(() => {
+  const url = editorURL;
+  if (!url) return;
+  try {
+    if (bridge?.openExternal) (bridge as any).openExternal(url);
+    else window.open(url, "_blank");
+  } catch {}
+}, [bridge, editorURL]);
+
+const reloadViewer = useCallback(() => {
+  try { (viewerRef.current as any)?.reload?.(); } catch {}
+}, []);
+
 
   // First-run walkthrough if a selected provider is missing keys
   const [showWalkthrough, setShowWalkthrough] = useState(false);
@@ -800,7 +823,7 @@ const [activeTabId, setActiveTabId] = useState<string>(initialTabId);
       const res = await bridge?.openEditorFile?.();
       if (res?.ok) {
         await openResultAsTab(res);
-        if (!bootingRef.current && viewMode === "aiOnly") { setViewMode("split"); try { await bridge?.updateConfig?.({ UI_MODE: "split" } as any); } catch {} }
+        if (viewMode === "aiOnly") { setViewMode("split"); try { await bridge?.updateConfig?.({ UI_MODE: "split" } as any); } catch {} }
         return;
 
         setEdFile({ rel: res.rel, abs: res.abs, fileURL: res.fileURL });
@@ -895,9 +918,7 @@ async function openResultAsTab(res: any) {
     viewAvailable: !!res.previewable,
   };
   setEdTabs(ts => [...ts, t]);
-  setActiveTabId(t.id);
-  syncFromTab(t);
-  setTimeout(() => focusEditor(), 0);
+  activateTab(t.id);
 }
 
 async function closeTabWithSave(id: string) {
@@ -1496,15 +1517,15 @@ useEffect(() => {
 
   {/* ─────────── RIGHT: Editor pane ─────────── */}
 <section className="editor-pane" style={editorPaneStyle}>
-  <div className="editor-header" style={{ paddingBottom: 0, marginBottom: 0 }}>
-    <div className="editor-tabs" style={{display: "flex", gap: 6, padding: "4px 6px 0 6px", border: "none", borderBottom: "none", borderTopLeftRadius: 8, borderTopRightRadius: 8, background: "transparent", marginBottom: -1}}>
+  <div className="editor-header">
+    <div className="editor-tabs" style={{ display: "flex", gap: 6, padding: "4px 6px 0 6px", border: "1px solid var(--border)", borderBottom: "none", borderTopLeftRadius: 8, borderTopRightRadius: 8, background: "var(--panel)" }}>
   {edTabs.map(t => (
     <div
       key={t.id}
       className={`tab ${t.id === activeTabId ? "active" : ""}`}
       onClick={() => activateTab(t.id)}
       title={t.file?.rel || t.title}
-      style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 5px 0 5px", cursor: "pointer", border: "1px solid var(--border)", borderBottom: "none", borderTopLeftRadius: 6, borderTopRightRadius: 6, background: (t.id === activeTabId ? "var(--panel-2)" : "transparent"), boxShadow: (t.id === activeTabId ? "inset 0 -2px 0 0 var(--panel)" : "none"), fontSize: "72%" }}
+      style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 5px", cursor: "pointer", border: "1px solid var(--border)", borderBottom: "none", borderTopLeftRadius: 6, borderTopRightRadius: 6, background: (t.id === activeTabId ? "var(--panel-2)" : "var(--panel)"), boxShadow: (t.id === activeTabId ? "inset 0 -2px 0 0 var(--panel)" : "none"), fontSize: "60%" }}
     >
       <span className="tab-title" style={{ userSelect: "none" }}>
         {(t.file?.rel ? (t.file.rel.split(/[\\/]/).pop() || t.title) : t.title)}{t.dirty ? "*" : ""}
@@ -1891,6 +1912,3 @@ useEffect(() => {
     </div>
   );
 }
-
-
-// Mark boot complete after first render\nuseEffect(() => { bootingRef.current = false; }, []);
