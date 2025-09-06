@@ -162,7 +162,7 @@ function cmLangForFilename(name?: string) {
 
 const cmTheme = EditorView.theme({
   "&": { backgroundColor: "var(--panel)", color: "var(--text)", height: "100%" },
-  ".cm-gutters": { backgroundColor: "rgba(0,0,0,0.35)", color: "var(--sub)", borderRight: "1px solid var(--border)" },
+  ".cm-gutters": { backgroundColor: "var(--panel)", color: "var(--sub)", borderRight: "1px solid var(--border)" },
   ".cm-activeLine": { backgroundColor: "rgba(255,255,255,0.04)" },
 });
 
@@ -595,8 +595,45 @@ const dividerStyle = useMemo<React.CSSProperties>(() => {
   const [edText, setEdText] = useState<string>("");
   const [edDirty, setEdDirty] = useState<boolean>(false);
   const [edViewAvailable, setEdViewAvailable] = useState<boolean>(false);
-  const [edPreviewType, setEdPreviewType] = useState<"none" | "file" | "md">("none");
-  // Share the open buffer with the AI when sending
+  
+
+// Editor focus ref
+const editorViewRef = useRef<any>(null);
+const focusEditor = useCallback(() => {
+  try { editorViewRef.current?.focus?.(); } catch {}
+  try {
+    const el = document.querySelector('.cm-editor [contenteditable="true"]') as HTMLElement | null;
+    el?.focus();
+  } catch {}
+}, []);
+
+const [edPreviewType, setEdPreviewType] = useState<"none" | "file" | "md">("none");
+  
+
+// --- Multi-tab editor state ---
+type EditorTab = {
+  id: string;
+  title: string;
+  file: { rel: string; abs: string; fileURL?: string } | null;
+  text: string;
+  dirty: boolean;
+  previewType: "none" | "file" | "md";
+  viewAvailable: boolean;
+};
+
+const initialTabId = useMemo(() => crypto.randomUUID(), []);
+const [edTabs, setEdTabs] = useState<EditorTab[]>([{
+  id: initialTabId,
+  title: "Untitled",
+  file: null,
+  text: "",
+  dirty: false,
+  previewType: "none",
+  viewAvailable: false,
+}]);
+const [activeTabId, setActiveTabId] = useState<string>(initialTabId);
+
+// Share the open buffer with the AI when sending
   const [shareOpenFile, setShareOpenFile] = useState<boolean>(false);
   // code editor refs
   const edGutterRef = useRef<HTMLDivElement | null>(null);
@@ -727,18 +764,6 @@ const dividerStyle = useMemo<React.CSSProperties>(() => {
     };
   }, [bridge]);
 
-
-useEffect(() => {
-  const onBeforeUnload = (e: BeforeUnloadEvent) => {
-    if (edDirty) {
-      e.preventDefault();
-      e.returnValue = "";
-    }
-  };
-  window.addEventListener("beforeunload", onBeforeUnload);
-  return () => window.removeEventListener("beforeunload", onBeforeUnload);
-}, [edDirty]);
-
   // exec pending event (optional)
   useEffect(() => {
     const off = bridge?.onExecPending?.((req) => setPending(req));
@@ -746,18 +771,6 @@ useEffect(() => {
       if (off) off();
     };
   }, [bridge]);
-
-
-useEffect(() => {
-  const onBeforeUnload = (e: BeforeUnloadEvent) => {
-    if (edDirty) {
-      e.preventDefault();
-      e.returnValue = "";
-    }
-  };
-  window.addEventListener("beforeunload", onBeforeUnload);
-  return () => window.removeEventListener("beforeunload", onBeforeUnload);
-}, [edDirty]);
 
   useEffect(() => {
     const off = bridge?.onMenu?.((cmd) => {
@@ -785,6 +798,10 @@ useEffect(() => {
     } else if (cmd === "file:open") {
       const res = await bridge?.openEditorFile?.();
       if (res?.ok) {
+        await openResultAsTab(res);
+        if (viewMode === "aiOnly") { setViewMode("split"); try { await bridge?.updateConfig?.({ UI_MODE: "split" } as any); } catch {} }
+        return;
+
         setEdFile({ rel: res.rel, abs: res.abs, fileURL: res.fileURL });
         setEdText(res.content);
         setEdDirty(false);
@@ -803,32 +820,11 @@ useEffect(() => {
           setEditorTab("edit");
         }
       }
-    
-
-// If currently AI-only, switch to split on open
-if (viewMode === "aiOnly") {
-  setViewMode("split");
-  try { await bridge?.updateConfig?.({ UI_MODE: "split" } as any); } catch {}
-}
-} else if (cmd === "file:save") {
-      if (!edFile) return;
-      const ok = await bridge?.saveEditorFile?.(edFile.rel, edText);
-      if (ok?.ok) setEdDirty(false);
-    
-} else if (cmd === "file:exec") {
-  const userCmd = window.prompt("Enter a shell command to run in the Working Directory:");
-  if (userCmd && bridge?.requestExec) {
-    try {
-      await bridge.requestExec({ id: crypto.randomUUID(), command: userCmd, cwd: root || "." });
-    } catch (err) {
-      setChat((c) => [...c, { from: "system", text: "Exec error: " + (err?.message ?? String(err)), ts: Date.now() }]);
-    }
-  }
-
-} else if (cmd === "file:saveAs") {
+    } else if (cmd === "file:save") { if (!edFile) return; const ok = await bridge?.saveEditorFile?.(edFile.rel, edText); if (ok?.ok) { setEdDirty(false); setEdTabs(ts => ts.map(t => t.id === activeTabId ? { ...t, dirty: false } : t)); } } else if (cmd === "file:saveAs") {
       const res = await bridge?.saveEditorFileAs?.(edFile?.rel, edText);
       if (res?.ok) {
         setEdFile({ rel: res.rel, abs: res.abs, fileURL: res.fileURL });
+        setEdTabs(ts => ts.map(t => t.id === activeTabId ? { ...t, file: { rel: res.rel, abs: res.abs, fileURL: res.fileURL }, dirty: false, previewType: (res.previewable ? (/\.(md|markdown)$/i.test(res.rel) ? "md" : "file") : "none"), viewAvailable: !!res.previewable } : t));
         setEdDirty(false);
         if (res.previewable) {
           if (/\.(md|markdown)$/i.test(res.rel)) setEdPreviewType("md");
@@ -843,6 +839,143 @@ if (viewMode === "aiOnly") {
   });
   return () => { if (typeof off === "function") off(); };
 }, [bridge, edFile, edText]);
+
+
+// --- Tab helpers ---
+
+
+useEffect(() => {
+  const t = edTabs.find(x => x.id === activeTabId);
+  if (t) {
+    // Keep editor/view mode in sync with tab's previewability
+    setEditorTab(t.previewType !== "none" ? "view" : "edit");
+  }
+}, [activeTabId, edTabs]);
+
+// Ensure the correct pane is visible immediately after a file loads
+useEffect(() => {
+  if (edPreviewType !== "none") setEditorTab("view");
+  else setEditorTab("edit");
+}, [edFile?.rel, edPreviewType]);
+
+
+
+
+const findTab = (id: string) => edTabs.find(t => t.id === id);
+const findTabByRel = (rel: string) => edTabs.find(t => t.file?.rel === rel);
+const basename = (p: string) => { try { return p.split(/[\\/]/).pop() || p; } catch { return p; } };
+
+function syncFromTab(t: EditorTab) {
+  setEdFile(t.file);
+  setEdText(t.text);
+  setEdDirty(t.dirty);
+  setEdPreviewType(t.previewType);
+  setEdViewAvailable(t.viewAvailable);
+}
+
+function activateTab(id: string) {
+  const t = findTab(id);
+  if (!t) return;
+  setActiveTabId(id);
+  syncFromTab(t);
+}
+
+async function openResultAsTab(res: any) {
+  if (!res?.ok) return;
+  const existing = res?.rel ? findTabByRel(res.rel) : undefined;
+  if (existing) { activateTab(existing.id); setEditorTab(existing.previewType !== "none" ? "view" : "edit"); setTimeout(() => focusEditor(), 0); return; }
+  const t: EditorTab = {
+    id: crypto.randomUUID(),
+    title: basename(res.rel || "Untitled"),
+    file: { rel: res.rel, abs: res.abs, fileURL: res.fileURL },
+    text: res.content ?? "",
+    dirty: false,
+    previewType: (res.previewable ? (/\.(md|markdown)$/i.test(res.rel) ? "md" : "file") : "none"),
+    viewAvailable: !!res.previewable,
+  };
+  setEdTabs(ts => [...ts, t]);
+  activateTab(t.id);
+}
+
+async function closeTabWithSave(id: string) {
+  const t0 = findTab(id);
+  if (!t0) return;
+  let t = t0;
+
+  // If dirty, prompt Save / Save As with suggested name
+  if (t.dirty) {
+    const ask = window.confirm(`Save changes to ${t.file?.rel || "Untitled.txt"}?`);
+    if (!ask) {
+      // user chose No: close without saving
+      setEdTabs(ts => ts.filter(x => x.id !== id));
+      if (id === activeTabId) {
+        setTimeout(() => {
+          setEdTabs(ts => {
+            if (ts.length === 0) {
+              const u: EditorTab = { id: crypto.randomUUID(), title: "Untitled", file: null, text: "", dirty: false, previewType: "none", viewAvailable: false };
+              setActiveTabId(u.id);
+              syncFromTab(u);
+              return [u];
+            }
+            const next = ts[ts.length - 1];
+            setActiveTabId(next.id);
+            syncFromTab(next);
+            return ts;
+          });
+        });
+      }
+      return;
+    }
+
+    const suggested = t.file?.rel || "Untitled.txt";
+    const res = await bridge?.saveEditorFileAs?.(suggested, t.text);
+    if (!res?.ok) return; // user cancelled
+    const updated: EditorTab = {
+      ...t,
+      file: { rel: res.rel, abs: res.abs, fileURL: res.fileURL },
+      dirty: false,
+      previewType: (res.previewable ? (/\.(md|markdown)$/i.test(res.rel) ? "md" : "file") : "none"),
+      viewAvailable: !!res.previewable,
+    };
+    setEdTabs(ts => ts.map(x => x.id === t.id ? updated : x));
+    if (t.id === activeTabId) syncFromTab(updated);
+    t = updated;
+  }
+
+  // Remove the tab
+  setEdTabs(ts => ts.filter(x => x.id !== id));
+  // If it was active, activate another or create Untitled
+  if (id === activeTabId) {
+    setTimeout(() => {
+      setEdTabs(ts => {
+        if (ts.length === 0) {
+          const u: EditorTab = {
+            id: crypto.randomUUID(),
+            title: "Untitled",
+            file: null, text: "", dirty: false, previewType: "none", viewAvailable: false
+          };
+          setActiveTabId(u.id);
+          syncFromTab(u);
+          return [u];
+        }
+        const next = ts[ts.length - 1];
+        setActiveTabId(next.id);
+        syncFromTab(next);
+        return ts;
+      });
+    });
+  }
+}
+
+// Mirror active tab into single-buffer state at mount
+useEffect(() => {
+  const t = edTabs.find(t => t.id === activeTabId);
+  if (t) syncFromTab(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
+
+
+
 
 
   useEffect(() => {
@@ -930,18 +1063,6 @@ if (viewMode === "aiOnly") {
     [bridge]
   );
 
-
-useEffect(() => {
-  const onBeforeUnload = (e: BeforeUnloadEvent) => {
-    if (edDirty) {
-      e.preventDefault();
-      e.returnValue = "";
-    }
-  };
-  window.addEventListener("beforeunload", onBeforeUnload);
-  return () => window.removeEventListener("beforeunload", onBeforeUnload);
-}, [edDirty]);
-
   // Import file (attach only)
   const importFile = useCallback(async () => {
     if (!bridge?.pickFile) {
@@ -995,18 +1116,6 @@ useEffect(() => {
   return () => { if (typeof off === "function") off(); };
 }, [bridge]);
   
-
-
-useEffect(() => {
-  const onBeforeUnload = (e: BeforeUnloadEvent) => {
-    if (edDirty) {
-      e.preventDefault();
-      e.returnValue = "";
-    }
-  };
-  window.addEventListener("beforeunload", onBeforeUnload);
-  return () => window.removeEventListener("beforeunload", onBeforeUnload);
-}, [edDirty]);
 
   // send with thinking placeholder + graceful reveal
   async function send() {
@@ -1152,33 +1261,7 @@ useEffect(() => {
     const b = blocks[0];
     const ext = langToExt(b.lang);
     if (!ext || ext === "txt") return;
-    const rel = `temp/ai-snippet-${Date.now()}
-
-// Ask to save/discard when buffer has unsaved changes
-async function confirmBeforeDiscard(): Promise<boolean> {
-  if (!edDirty) return true;
-  const choice = window.confirm("You have unsaved changes. Save them now? Click OK to Save, Cancel to discard.");
-  if (choice) {
-    if (edFile) {
-      const ok = await bridge?.saveEditorFile?.(edFile.rel, edText);
-      if (ok?.ok) setEdDirty(false);
-      return true;
-    } else {
-      const res = await bridge?.saveEditorFileAs?.(undefined, edText);
-      if (res?.ok) {
-        setEdFile({ rel: res.rel, abs: res.abs, fileURL: res.fileURL });
-        setEdDirty(false);
-        return true;
-      }
-      return false;
-    }
-  } else {
-    // discard
-    setEdDirty(false);
-    return true;
-  }
-}
-.${ext}`;
+    const rel = `temp/ai-snippet-${Date.now()}.${ext}`;
     try {
       await bridge!.writeFile(rel, b.code);
       const cmd = execCmdFor(ext, rel);
@@ -1411,15 +1494,31 @@ async function confirmBeforeDiscard(): Promise<boolean> {
   {/* ─────────── RIGHT: Editor pane ─────────── */}
 <section className="editor-pane" style={editorPaneStyle}>
   <div className="editor-header">
-    <div className="editor-tabs">
+    <div className="editor-tabs" style={{ display: "flex", gap: 6, padding: "4px 6px 0 6px", border: "1px solid var(--border)", borderBottom: "none", borderTopLeftRadius: 8, borderTopRightRadius: 8, background: "var(--panel)" }}>
+  {edTabs.map(t => (
+    <div
+      key={t.id}
+      className={`tab ${t.id === activeTabId ? "active" : ""}`}
+      onClick={() => activateTab(t.id)}
+      title={t.file?.rel || t.title}
+      style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 5px", cursor: "pointer", border: "1px solid var(--border)", borderBottom: "none", borderTopLeftRadius: 6, borderTopRightRadius: 6, background: (t.id === activeTabId ? "var(--panel-2)" : "var(--panel)"), boxShadow: (t.id === activeTabId ? "inset 0 -2px 0 0 var(--panel)" : "none"), fontSize: "60%" }}
+    >
+      <span className="tab-title" style={{ userSelect: "none" }}>
+        {(t.file?.rel ? (t.file.rel.split(/[\\/]/).pop() || t.title) : t.title)}{t.dirty ? "*" : ""}
+      </span>
+      <button
+        className="tab-close"
+        onClick={(e) => { e.stopPropagation(); closeTabWithSave(t.id); }}
+        title="Close tab"
+        style={{ border: "none", background: "transparent", fontWeight: 700, cursor: "pointer", fontSize: "90%", lineHeight: 1 }}
+      >
+        ×
+      </button>
     </div>
+  ))}
+</div>
 
     <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
-      
-
-      <div style={{ fontSize: 12, opacity: 0.8 }} className="mono">
-        {edFile?.rel || editorURL}{edDirty ? " • UNSAVED" : ""}
-      </div>
     </div>
 
   </div>
@@ -1458,7 +1557,7 @@ async function confirmBeforeDiscard(): Promise<boolean> {
               keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap]),
               cmLangForFilename(edFile?.rel),
             ]}
-            onChange={(val) => { setEdText(val); setEdDirty(true); }}
+            onCreateEditor={(view) => { editorViewRef.current = view; setTimeout(() => view.focus(), 0); }} onChange={(val) => { setEdText(val); setEdDirty(true); setEdTabs(ts => ts.map(t => t.id === activeTabId ? { ...t, text: val, dirty: true } : t)); }}
             basicSetup={false}
           />
         </div>

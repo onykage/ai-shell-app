@@ -144,11 +144,18 @@ function createAppMenu() {
         { role: "quit" },
     ];
     const fileSubmenu = [
+        {
+            label: "Settings",
+            accelerator: "CmdOrCtrl+,",
+            click: () => mainWindow?.webContents.send("menu:cmd", "openSettings"),
+        },
+        { label: "Toggle Editor Console",
+            accelerator: "CmdOrCtrl+Shift+K",
+            click: () => mainWindow?.webContents.send("menu:cmd", "toggleEditorConsole"),
+        },
         { label: "Open…", accelerator: "CmdOrCtrl+O", click: () => mainWindow?.webContents.send("menu:cmd", "file:open") },
         { label: "Save", accelerator: "CmdOrCtrl+S", click: () => mainWindow?.webContents.send("menu:cmd", "file:save") },
         { label: "Save As…", accelerator: "CmdOrCtrl+Shift+S", click: () => mainWindow?.webContents.send("menu:cmd", "file:saveAs") },
-        { type: "separator" },
-        { label: "Execute Command…", accelerator: "CmdOrCtrl+E", click: () => mainWindow?.webContents.send("menu:cmd", "file:exec") },
         {
             label: "Select Working Directory…",
             click: async () => {
@@ -163,11 +170,6 @@ function createAppMenu() {
             },
         },
         { type: "separator" },
-        {
-            label: "Settings",
-            accelerator: "CmdOrCtrl+,",
-            click: () => mainWindow?.webContents.send("menu:cmd", "openSettings"),
-        },
         isMac ? { role: "close" }
             : { role: "quit" },
     ];
@@ -186,7 +188,6 @@ function createAppMenu() {
     const viewSubmenu = [
         { role: "reload" },
         { role: "toggleDevTools" },
-        { label: "Toggle Editor Console", accelerator: "CmdOrCtrl+Shift+K", click: () => mainWindow?.webContents.send("menu:cmd", "toggleEditorConsole") },
         { type: "separator" },
         { role: "togglefullscreen" },
         { type: "separator" },

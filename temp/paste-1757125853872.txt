@@ -1,0 +1,1 @@
+this project used codemiror. the line numbers in the editor pane, are they created by codeMirror or by the app code itself? i believe that is called the gutter.
